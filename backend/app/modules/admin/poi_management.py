@@ -10,7 +10,8 @@ from app.core.cache import cache_get_json, cache_set_json
 import hashlib
 import json
 from app.modules.admin.schemas import POICreateRequest, POIUpdateRequest
-from app.modules.audio.source_version import source_fingerprint
+from app.modules.audio.source_version import source_fingerprint, text_fingerprint, field_is_current
+from app.modules.audio.source_updates import refresh_audio_tasks
 
 
 def now():
@@ -64,27 +65,17 @@ def vietnamese_search_regex(value: str) -> str:
     )
 
 
-def localized_ready(en):
-    problems = []
-    if not en or not str(en.get("title") or "").strip():
-        problems.append("Thiếu tên quán bằng tiếng Anh")
-    if not en or not str(en.get("description") or "").strip():
-        problems.append("Thiếu mô tả tiếng Anh")
-    if not en or en.get("audio_status") != "completed" or not str(en.get("audio_url") or "").strip():
-        problems.append("Chưa hoàn tất âm thanh tiếng Anh")
-    return {"ready": not problems, "reasons": problems}
+def english_localization(doc):
+    doc = doc or {}
+    return {key: doc.get(key) for key in ('title', 'description', 'audio_status', 'audio_url')}
 
 
-async def gate_for(poi_id, session=None):
-    en = await get_db()["poi_localizations"].find_one({"poi_id": poi_id, "lang": "en"}, session=session)
-    gate = localized_ready(en)
-    return {**gate, "en": {"title": (en or {}).get("title"),
-                           "description": (en or {}).get("description"),
-                           "audio_status": (en or {}).get("audio_status"),
-                           "audio_url": (en or {}).get("audio_url")}}
+async def get_english_localization(poi_id, session=None):
+    doc = await get_db()['poi_localizations'].find_one({'poi_id': poi_id, 'lang': 'en'}, session=session)
+    return english_localization(doc)
 
 
-def serialize_poi(doc, gate):
+def serialize_poi(doc, english):
     location = doc.get("location") or {}
     return {
         "id": str(doc["_id"]), "slug": doc.get("slug"), "name": doc.get("name"),
@@ -92,7 +83,7 @@ def serialize_poi(doc, gate):
         "location": location, "original_description": doc.get("original_description"),
         "images": doc.get("images") or [], "trigger_radius": doc.get("trigger_radius", 30),
         "audio_priority": doc.get("audio_priority", 5), "is_active": bool(doc.get("is_active")),
-        "revision": doc.get("revision", 0), "activation": gate,
+        "revision": doc.get("revision", 0), "english_localization": english,
         "created_at": doc["created_at"].isoformat() if isinstance(doc.get("created_at"), datetime) else None,
         "updated_at": doc["updated_at"].isoformat() if isinstance(doc.get("updated_at"), datetime) else None,
     }
@@ -106,33 +97,47 @@ async def bump_dataset(session=None):
     return result["version"]
 
 
-async def invalidate_narrations(db, pid, name, description, *, name_changed, desc_changed, session):
-    """Invalidate ALL languages after source changes, within the POI transaction.
-
-    Existing translations lose provenance and audio URL; they cannot accidentally
-    be reused even if another Audio worker races with a POI edit.
-    Vietnamese localization is synced to the authoritative POI source immediately.
-    """
+async def invalidate_narrations(db, pid, name, description, *, name_changed, desc_changed,
+                                previous_name, previous_description, session, ensure_audio=False):
+    """Invalidate only changed sources, preserving speech on a title-only edit."""
     stamp = now()
-    reset = {"audio_status": "pending", "audio_url": None, "updated_at": stamp}
-    if name_changed:
-        reset["title"] = None
-    if desc_changed:
-        reset["description"] = None
-    await db["poi_localizations"].update_many(
-        {"poi_id": pid, "lang": {"$in": ["en", "zh", "ja", "ko"]}},
-        {"$set": reset, "$unset": {"source_hash": "", "translation_origin": ""}},
-        session=session,
-    )
+    vi = await db["poi_localizations"].find_one({"poi_id": pid, "lang": "vi"}, session=session)
+    description = (description or (vi or {}).get("description") or "").strip()
+    previous_description = (previous_description or description).strip()
+    for lang in ("en", "zh", "ja", "ko"):
+        loc = await db["poi_localizations"].find_one({"poi_id": pid, "lang": lang}, session=session)
+        if not loc:
+            continue
+        fields, unset = {"updated_at": stamp}, {"source_hash": ""}
+        for field, changed in (("title", name_changed), ("description", desc_changed)):
+            if changed:
+                fields[field] = None
+                unset[f"{field}_source_hash"] = ""
+            elif field_is_current(loc, field, previous_name, previous_description):
+                fields[f"{field}_source_hash"] = text_fingerprint(name if field == "title" else description)
+        if desc_changed:
+            fields.update(audio_status="pending", audio_url=None)
+            unset["translation_origin"] = ""
+        await db["poi_localizations"].update_one(
+            {"_id": loc["_id"]}, {"$set": fields, "$unset": unset}, session=session,
+        )
     fingerprint = source_fingerprint(name, description)
+    vi_fields = {"title": name, "description": description, "source_hash": fingerprint,
+                 "title_source_hash": text_fingerprint(name),
+                 "description_source_hash": text_fingerprint(description),
+                 "updated_at": stamp, "translation_origin": "auto"}
+    if desc_changed or not vi or vi.get("description") != description:
+        vi_fields.update(audio_url=None, audio_status="pending")
     await db["poi_localizations"].update_one(
         {"poi_id": pid, "lang": "vi"},
-        {"$set": {"title": name, "description": description, "source_hash": fingerprint,
-                  "audio_url": None, "audio_status": "pending", "updated_at": stamp,
-                  "translation_origin": "auto"},
+        {"$set": vi_fields,
          "$setOnInsert": {"created_at": stamp}},
         upsert=True, session=session,
     )
+    if ensure_audio:
+        from app.modules.audio.source_updates import ensure_description_audio_task
+        return await ensure_description_audio_task(db, pid, name, description, session=session)
+    await refresh_audio_tasks(db, pid, name, description, session=session)
 
 
 async def list_pois(q=None, ward=None, active=None, limit=200, skip=0):
@@ -155,12 +160,7 @@ async def list_pois(q=None, ward=None, active=None, limit=200, skip=0):
     ids = [d["_id"] for d in docs]
     en_docs = [d async for d in db["poi_localizations"].find({"poi_id": {"$in": ids}, "lang": "en"})] if ids else []
     en_by_id = {d["poi_id"]: d for d in en_docs}
-    items = [serialize_poi(d, {**localized_ready(en_by_id.get(d["_id"])), "en": {
-        "title": (en_by_id.get(d["_id"]) or {}).get("title"),
-        "description": (en_by_id.get(d["_id"]) or {}).get("description"),
-        "audio_url": (en_by_id.get(d["_id"]) or {}).get("audio_url"),
-        "audio_status": (en_by_id.get(d["_id"]) or {}).get("audio_status"),
-    }}) for d in docs]
+    items = [serialize_poi(d, english_localization(en_by_id.get(d['_id']))) for d in docs]
     wards = sorted(v for v in await db["poi"].distinct("ward") if v)
     output = {"items": items, "total": total, "limit": limit, "skip": skip, "wards": wards}
     await cache_set_json(cache_key, output, ttl=10)
@@ -172,17 +172,15 @@ async def get_poi(poi_id):
     doc = await get_db()["poi"].find_one({"_id": pid})
     if not doc:
         raise HTTPException(404, "Không tìm thấy quán")
-    return serialize_poi(doc, await gate_for(pid))
+    return serialize_poi(doc, await get_english_localization(pid))
 
 
 async def insert_poi(payload: POICreateRequest, user, ip, *, session, owner_id=None, publish_on_approval=False):
     db = get_db()
-    if payload.is_active and not publish_on_approval:
-        raise HTTPException(409, {"message": "Không thể công khai POI mới khi chưa có tiếng Anh và audio", "reasons": localized_ready(None)["reasons"]})
     stamp = now()
     doc = payload.model_dump(mode="python")
     doc["location"] = payload.location.model_dump(mode="python")
-    doc.update({"is_active": publish_on_approval, "slug": f"{slugify(payload.name)}-{str(ObjectId())[:8]}",
+    doc.update({"is_active": publish_on_approval or payload.is_active, "slug": f"{slugify(payload.name)}-{str(ObjectId())[:8]}",
                 "revision": 1, "created_at": stamp, "updated_at": stamp})
     from app.modules.admin.audit import write_audit_event
     if owner_id is not None:
@@ -215,22 +213,11 @@ async def update_poi(poi_id, payload: POIUpdateRequest, user, ip):
         raise HTTPException(409, "POI đã được cập nhật bởi quản trị viên khác; hãy tải lại")
     if "location" in data:
         data["location"] = payload.location.model_dump()
-    if data.get("is_active") is True:
-        gate = await gate_for(pid)
-        if not gate["ready"]:
-            raise HTTPException(409, {"message": "Activation Gate chưa đạt", "reasons": gate["reasons"]})
-    # Nội dung gốc đổi -> audio EN cũ cần được tạo lại trước khi được công khai.
     desc_changed = "original_description" in data and data["original_description"] != existing.get("original_description")
     name_changed = "name" in data and data["name"] != existing.get("name")
     narrative_changed = desc_changed or name_changed
-    if narrative_changed and data.get("is_active", existing.get("is_active", False)):
-        raise HTTPException(409, "Hãy tắt công khai quán trước khi đổi mô tả để tạo lại audio tiếng Anh")
     from app.modules.admin.audit import write_audit_event
     async with mongo_transaction() as tx:
-        if data.get("is_active") is True:
-            gate = await gate_for(pid, session=tx)
-            if not gate["ready"]:
-                raise HTTPException(409, {"message": "Activation Gate chưa đạt", "reasons": gate["reasons"]})
         updated = await db["poi"].update_one(
             {"_id": pid, **revision_query(existing)},
             {"$set": {**data, "updated_at": now()}, "$inc": {"revision": 1}}, session=tx)
@@ -241,10 +228,15 @@ async def update_poi(poi_id, payload: POIUpdateRequest, user, ip):
                 db, pid, data.get("name", existing.get("name", "")),
                 data.get("original_description", existing.get("original_description", "")),
                 name_changed=name_changed, desc_changed=desc_changed, session=tx,
+                previous_name=existing.get("name", ""),
+                previous_description=existing.get("original_description") or existing.get("description") or "",
             )
         version = await bump_dataset(session=tx)
         await write_audit_event(user["id"], "poi.update", f"poi:{pid}", ip,
                                 {"fields": list(data), "dataset_version": version}, session=tx)
+    if narrative_changed:
+        from app.modules.audio.task_store import audio_task_store
+        audio_task_store._notify()
     return await get_poi(poi_id)
 
 
@@ -291,9 +283,8 @@ async def save_english(poi_id, payload, user, ip):
     if payload.expected_revision != poi.get("revision", 0):
         raise HTTPException(409, "Phiên bản POI đã đổi; hãy tải lại")
     en = await db["poi_localizations"].find_one({"poi_id": pid, "lang": "en"}) or {}
-    content_changed = payload.title != en.get("title") or payload.description != en.get("description")
-    if content_changed and poi.get("is_active"):
-        raise HTTPException(409, "Hãy tắt công khai quán trước khi thay đổi bản dịch tiếng Anh")
+    description_changed = payload.description != en.get("description")
+    content_changed = payload.title != en.get("title") or description_changed
     if not content_changed:
         return await get_poi(poi_id)
     from app.modules.admin.audit import write_audit_event
@@ -306,8 +297,10 @@ async def save_english(poi_id, payload, user, ip):
             {"$set": {"title": payload.title, "description": payload.description,
                       "source_hash": source_fingerprint(
                           poi.get("name", ""), poi.get("original_description") or poi.get("description") or ""),
+                      "title_source_hash": text_fingerprint(poi.get("name", "")),
+                      "description_source_hash": text_fingerprint(poi.get("original_description") or poi.get("description") or ""),
                       "translation_origin": "manual",
-                      "audio_status": "pending", "audio_url": None, "updated_at": now()},
+                      **({"audio_status": "pending", "audio_url": None} if description_changed else {}), "updated_at": now()},
              "$setOnInsert": {"created_at": now(), "is_fallback": False}}, upsert=True, session=tx)
         version = await bump_dataset(session=tx)
         await write_audit_event(user["id"], "poi.english_update", f"poi:{pid}", ip,

@@ -9,15 +9,14 @@ from datetime import datetime, time, timedelta, timezone
 
 from app.core.database import get_db
 from app.modules.admin.dashboard_stats import get_admin_dashboard_stats
-from app.modules.admin.poi_management import localized_ready
 from app.modules.analytics.service import LOCAL_TZ
 
 
 async def _readiness_snapshot(db, *, batch_size: int = 250) -> dict:
-    """Use the exact POI publication gate, reading only a bounded POI batch.
+    """Track optional English content coverage independently of publication.
 
-    A POI can be public while failing the gate if legacy data was edited outside
-    the application. We surface this as a data-quality warning, not as ready.
+    Legacy counter names remain compatible with existing dashboard consumers;
+    none of these content metrics blocks publishing a POI.
     """
     counters = {
         "total": 0,
@@ -44,8 +43,10 @@ async def _readiness_snapshot(db, *, batch_size: int = 250) -> dict:
             counters["total"] += 1
             published = poi.get("is_active") is True
             en = english.get(poi["_id"])
-            gate = localized_ready(en)
-            ready = gate["ready"]
+            ready = bool(en and str(en.get('title') or '').strip()
+                         and str(en.get('description') or '').strip()
+                         and en.get('audio_status') == 'completed'
+                         and str(en.get('audio_url') or '').strip())
             if published:
                 counters["published"] += 1
             if ready:

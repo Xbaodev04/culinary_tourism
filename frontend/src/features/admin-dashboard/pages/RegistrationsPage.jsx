@@ -1,3 +1,4 @@
+import useToastFeedback from '../hooks/useToastFeedback.js';
 import React, { useEffect, useRef, useState } from 'react';
 import axiosClient from '../../../api/axiosClient.js';
 import { useAuthStore } from '../../../store/authStore.js';
@@ -55,14 +56,15 @@ function RegistrationReview({ item, close, reviewed, reload }) {
   const canReject = canReview && item.status === 'pending';
   const storedPin = item.poi_location?.coordinates;
   const [legacyPin, setLegacyPin] = useState(null);
+  const [legacyDescription, setLegacyDescription] = useState('');
   const [cccd, setCccd] = useState(null);
   const [cccdLoading, setCccdLoading] = useState(false);
-  const [cccdError, setCccdError] = useState('');
+  const [cccdError, setCccdError] = useToastFeedback('error');
   const [rejecting, setRejecting] = useState(false);
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
   const [stale, setStale] = useState(false);
-  const [error, setError] = useState('');
+  const [error, setError] = useToastFeedback('error');
   const hideTimer = useRef(null);
   const cccdRequest = useRef(null);
 
@@ -101,6 +103,9 @@ function RegistrationReview({ item, close, reviewed, reload }) {
     setError('');
     try {
       const decision = { action, admin_note: note.trim() || null };
+      if (action === 'approve' && !item.poi_description?.trim()) {
+        decision.poi_description = legacyDescription.trim();
+      }
       if (action === 'approve' && !storedPin && legacyPin) {
         decision.poi_location = { type: 'Point', coordinates: legacyPin };
       }
@@ -148,7 +153,7 @@ function RegistrationReview({ item, close, reviewed, reload }) {
             <>
               {canReject && <button type="button" disabled={busy} onClick={() => { setRejecting(true); setError(''); }}
                 className="rounded-lg bg-red-100 px-4 py-2 text-red-800 disabled:opacity-40">Từ chối</button>}
-              {canApprove && canPublish && <button type="button" disabled={busy || (!storedPin && !legacyPin)}
+              {canApprove && canPublish && <button type="button" disabled={busy || (!storedPin && !legacyPin) || (!item.poi_description?.trim() && !legacyDescription.trim())}
                 onClick={() => review('approve')}
                 className="rounded-lg bg-teal-700 px-4 py-2 text-white disabled:opacity-40">
                 {busy ? 'Đang duyệt…' : 'Duyệt và công khai quán'}
@@ -171,7 +176,16 @@ function RegistrationReview({ item, close, reviewed, reload }) {
           <Field label="Email">{item.email}</Field>
           <Field label="Ngày gửi">{fmt(item.created_at)}</Field>
           <div className="sm:col-span-2"><Field label="Địa chỉ quán">{item.poi_address}</Field></div>
+            <Field label="Bán kính kích hoạt audio">{item.trigger_radius ?? 30} m</Field>
+          <div className="sm:col-span-2 whitespace-pre-wrap"><Field label="Mô tả quán / Nội dung thuyết minh">{item.poi_description}</Field></div>
         </dl>
+        {!item.poi_description?.trim() && canApprove && <label className="block text-sm font-medium">
+          Bổ sung mô tả cho hồ sơ cũ *
+          <textarea required rows={6} maxLength={8000} value={legacyDescription} disabled={busy || stale}
+            onChange={(event) => setLegacyDescription(event.target.value)}
+            className="mt-1 block w-full rounded-lg border border-slate-300 bg-white p-2" />
+          <span className="mt-1 block text-xs text-slate-500">Mô tả được lưu làm nguồn tạo audio khi duyệt hồ sơ.</span>
+        </label>}
         <div className="grid items-start gap-4 md:grid-cols-2">
           <section className="min-w-0 space-y-2">
             <h4 className="text-sm font-semibold">Ảnh mặt tiền</h4>

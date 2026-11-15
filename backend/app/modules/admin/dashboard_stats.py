@@ -116,7 +116,7 @@ async def get_admin_dashboard_stats(days: int = 30) -> dict:
             "submissions": submissions,
             "audio": {
                 **audio,
-                "processing": sum(audio[status] for status in ("queued", "running", "paused")),
+                "processing": sum(audio[status] for status in ("queued", "running", "paused")) * 2,
             },
         },
         "interactions": {

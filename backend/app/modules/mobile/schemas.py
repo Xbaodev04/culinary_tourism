@@ -82,6 +82,7 @@ class UserProfileResponse(BaseModel):
 class POIResponse(BaseModel):
     id: str
     name: str
+    is_active: bool = True
     latitude: float
     longitude: float
     radius: int = 30

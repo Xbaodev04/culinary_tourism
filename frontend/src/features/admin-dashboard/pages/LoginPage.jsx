@@ -1,3 +1,4 @@
+import useToastFeedback from '../hooks/useToastFeedback.js';
 import React, { useState } from "react";
 import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
 import axiosClient from "../../../api/axiosClient.js";
@@ -16,7 +17,7 @@ export default function LoginPage() {
   const { user, setUser } = useAuthStore();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
+  const [error, setError] = useToastFeedback('error');
   const [submitting, setSubmitting] = useState(false);
 
   function destination(account) {

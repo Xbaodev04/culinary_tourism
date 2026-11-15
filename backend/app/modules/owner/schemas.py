@@ -24,6 +24,8 @@ class OwnerRegisterRequest(BaseModel):
     password: str = Field(min_length=12, max_length=72)
     poi_name: str = Field(min_length=1, max_length=180)
     poi_address: str = Field(min_length=1, max_length=400)
+    poi_description: str = Field(min_length=1, max_length=8000)
+    trigger_radius: int = Field(default=30, ge=5, le=500)
     poi_location: POILocation | None = None
     poi_ward: str | None = Field(default=None, min_length=1, max_length=80)
     cccd_number: str = Field(min_length=9, max_length=12, pattern=r"^(?:\d{9}|\d{12})$")

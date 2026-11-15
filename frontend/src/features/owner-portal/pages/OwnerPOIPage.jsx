@@ -18,10 +18,8 @@ const blankMenu = { name: "", price_vnd: "", images: [], tags: "" };
 const blankProposal = {
   name: "",
   address: "",
-  ward: "",
-  category: "",
+  trigger_radius: "30",
   original_description: "",
-  coordinates: null,
 };
 
 function parseTags(value) {
@@ -31,27 +29,12 @@ function parseTags(value) {
     .filter(Boolean);
 }
 
-function coordinatesFromPoi(poi) {
-  const coordinates = poi.location?.coordinates;
-  if (!Array.isArray(coordinates) || coordinates.length < 2) return null;
-  const [rawLongitude, rawLatitude] = coordinates;
-  if (rawLongitude == null || rawLatitude == null
-    || String(rawLongitude).trim() === "" || String(rawLatitude).trim() === "") return null;
-  const longitude = Number(rawLongitude);
-  const latitude = Number(rawLatitude);
-  return Math.abs(longitude) <= 180 && Math.abs(latitude) <= 90
-    ? [longitude, latitude]
-    : null;
-}
-
 function proposalFromPoi(poi) {
   return {
     name: poi.name || "",
     address: poi.address || "",
-    ward: poi.ward || "",
-    category: poi.category || "",
+    trigger_radius: String(poi.trigger_radius ?? 30),
     original_description: poi.original_description || "",
-    coordinates: coordinatesFromPoi(poi),
   };
 }
 
@@ -75,7 +58,6 @@ export default function OwnerPOIPage({
   const menuFormId = useId();
   const [proposal, setProposal] = useState(blankProposal);
   const [proposalPhoto, setProposalPhoto] = useState(null);
-  const [locationBusy, setLocationBusy] = useState(false);
   const [proposalBusy, setProposalBusy] = useState(false);
   const [generatingDescription, setGeneratingDescription] = useState(false);
   const [descriptionError, setDescriptionError] = useState("");
@@ -265,23 +247,21 @@ export default function OwnerPOIPage({
 
   async function submitProposal(event) {
     event.preventDefault();
-    if (!selected || proposalBusy || generatingDescription || locationBusy) return;
+    if (!selected || proposalBusy || generatingDescription) return;
     const proposed_changes = {};
-    ["name", "address", "ward", "category", "original_description"].forEach(
+    ["name", "address", "original_description"].forEach(
       (key) => {
         const next = String(proposal[key] || "").trim();
         if (next !== String(selected[key] || "").trim())
           proposed_changes[key] = next;
       },
     );
-    const coordinates = proposal.coordinates;
-    const original = coordinatesFromPoi(selected) ?? [];
-    if (coordinates && (coordinates[0] !== original[0] || coordinates[1] !== original[1])) {
-      proposed_changes.location = {
-        type: "Point",
-        coordinates,
-      };
+    const radius = Number(proposal.trigger_radius);
+    if (!Number.isInteger(radius) || radius < 5 || radius > 500) {
+      toast.error("Bán kính phải là số nguyên từ 5 đến 500 mét.");
+      return;
     }
+    if (radius !== (selected.trigger_radius ?? 30)) proposed_changes.trigger_radius = radius;
     if (!proposalPhoto && !Object.keys(proposed_changes).length) {
       toast.error("Chưa có thay đổi nào trong thông tin quán.");
       return;
@@ -497,7 +477,7 @@ export default function OwnerPOIPage({
       <OwnerDialog
         open={dialog === "proposal"}
         onClose={() => setDialog(null)}
-        busy={proposalBusy || generatingDescription || locationBusy}
+        busy={proposalBusy || generatingDescription}
         className="owner-proposal-dialog"
         title="Đề xuất chỉnh sửa thông tin quán"
         description="Quản trị viên sẽ xét duyệt trước khi cập nhật."
@@ -514,30 +494,18 @@ export default function OwnerPOIPage({
               }
             />
           </label>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <label className="block text-sm font-medium text-slate-700">
-              Phường
-              <input
-                className={input}
-                maxLength={80}
-                value={proposal.ward}
-                onChange={(event) =>
-                  setProposal({ ...proposal, ward: event.target.value })
-                }
-              />
-            </label>
-            <label className="block text-sm font-medium text-slate-700">
-              Loại hình
-              <input
-                className={input}
-                maxLength={80}
-                value={proposal.category}
-                onChange={(event) =>
-                  setProposal({ ...proposal, category: event.target.value })
-                }
-              />
-            </label>
-          </div>
+          <label className="block text-sm font-medium text-slate-700">
+            Địa chỉ quán
+            <input className={input} required maxLength={400} value={proposal.address}
+              onChange={(event) => setProposal({ ...proposal, address: event.target.value })} />
+          </label>
+          <label className="block text-sm font-medium text-slate-700">
+            Bán kính kích hoạt audio (m)
+            <input className={input} required type="number" min={5} max={500} step={1}
+              value={proposal.trigger_radius}
+              onChange={(event) => setProposal({ ...proposal, trigger_radius: event.target.value })} />
+            <span className="mt-1 block text-xs text-slate-500">Từ 5–500 m. Thay đổi sẽ có hiệu lực sau khi admin duyệt.</span>
+          </label>
           <div>
             <label htmlFor={descriptionId} className="block text-sm font-medium text-slate-700">
               Mô tả
@@ -604,15 +572,12 @@ export default function OwnerPOIPage({
               coverUrl={selected.images?.[0]}
               photo={proposalPhoto}
               onPhotoChange={setProposalPhoto}
-              address={proposal.address}
-              coordinates={proposal.coordinates}
-              onLocationChange={(changes) => setProposal((current) => ({ ...current, ...changes }))}
-              onLookupChange={setLocationBusy}
+              showLocation={false}
               disabled={proposalBusy}
             />
           )}
           <button
-            disabled={proposalBusy || generatingDescription || locationBusy}
+            disabled={proposalBusy || generatingDescription}
             className="w-full rounded-lg border border-orange-300 bg-orange-50 px-4 py-2.5 text-sm font-semibold text-orange-900 hover:bg-orange-100 disabled:opacity-50"
           >
             {proposalBusy ? "Đang gửi đề xuất…" : "Gửi quản trị viên xét duyệt"}

@@ -28,6 +28,7 @@ COLLECTIONS = {
     "AUDIT_LOGS": "audit_logs",
     "SYSTEM_META": "system_meta",
     "REFRESH_SESSIONS": "refresh_sessions",
+    "MOBILE_PRESENCE": "mobile_presence",
 }
 
 
@@ -88,6 +89,28 @@ async def ping_db() -> bool:
         return False
 
 
+async def ensure_user_email_index(database: Any) -> None:
+    """Keep real email addresses unique while allowing multiple guest accounts.
+
+    Build the replacement before dropping the legacy index, preserving email
+    uniqueness throughout the migration. No user documents are changed.
+    """
+    users = database["users"]
+    await users.create_index(
+        "email", unique=True, name="email_unique_present",
+        partialFilterExpression={"email": {"$type": "string"}},
+    )
+    indexes = await users.index_information()
+    legacy = indexes.get("email_unique")
+    if legacy and legacy.get("unique") and not legacy.get("partialFilterExpression"):
+        from pymongo.errors import OperationFailure
+        try:
+            await users.drop_index("email_unique")
+        except OperationFailure as exc:
+            if exc.code != 27:  # another startup may already have migrated it
+                raise
+
+
 async def ensure_indexes(database: Any) -> None:
     """Idempotent: chạy lại nhiều lần không lỗi. Gọi lúc startup và trong seed script."""
     # --- poi: index không gian cho $geoNear + lọc quản trị ---
@@ -103,7 +126,7 @@ async def ensure_indexes(database: Any) -> None:
     )
 
     # --- users / roles ---
-    await database["users"].create_index("email", unique=True, name="email_unique")
+    await ensure_user_email_index(database)
     await database["users"].create_index("role", name="role")
     await database["roles"].create_index("name", unique=True, name="role_name_unique")
     await database["refresh_sessions"].create_index("expires_at", expireAfterSeconds=0, name="expires_ttl")
@@ -134,6 +157,8 @@ async def ensure_indexes(database: Any) -> None:
     await database["analytics_poi_events"].create_index("expires_at", expireAfterSeconds=0, name="expires_ttl")
 
     # --- audio_tasks / audit_logs ---
+    await database["mobile_presence"].create_index("expires_at", expireAfterSeconds=0, name="presence_expiry")
+    await database["mobile_presence"].create_index("device_key", name="presence_device")
     await database["audio_tasks"].create_index(
         [("status", 1), ("updated_at", -1)], name="status_updated"
     )

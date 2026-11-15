@@ -1,8 +1,11 @@
+import asyncio
 import random
 import time
 import uuid
 from typing import Optional, Tuple
 from fastapi import HTTPException
+from bson import ObjectId
+from pymongo.errors import DuplicateKeyError
 from app.core.database import get_db
 from app.modules.mobile.schemas import (
     ChangePasswordRequest,
@@ -19,13 +22,20 @@ from app.modules.mobile.utils.security import (
     hash_password,
     verify_password,
 )
-from google.auth.exceptions import GoogleAuthError
+from google.auth.exceptions import GoogleAuthError, TransportError
 from google.auth.transport import requests as google_requests
 from google.oauth2 import id_token as google_id_token
 from app.core.config import settings
 
 
 class MobileAuthService:
+    @staticmethod
+    def user_id_query(user_id: str) -> dict:
+        ids = [user_id]
+        if ObjectId.is_valid(user_id):
+            ids.append(ObjectId(user_id))
+        return {"_id": {"$in": ids}}
+
     @property
     def db(self):
         return get_db()
@@ -122,21 +132,35 @@ class MobileAuthService:
         return {"accessToken": access_token, "refreshToken": refresh_token}
 
     async def login_or_create_by_device(self, device_id: str) -> dict:
+        device_id = device_id.strip()
+        if not device_id or len(device_id) > 256:
+            raise HTTPException(422, "device_id must contain 1 to 256 characters")
         user = await self.db.users.find_one({"device_id": device_id})
         if not user:
-            user_id = str(uuid.uuid4())
-            short_id = device_id[:8] if len(device_id) >= 8 else device_id
+            # Stable primary key makes simultaneous first logins idempotent.
+            user_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"culinary-tourism:device:{device_id}"))
+            short_id = user_id[:8]
             user_doc = {
                 "_id": user_id,
                 "device_id": device_id,
-                "username": f"guest_{short_id}",
+                "username": f"guest_{user_id.replace('-', '')}",
                 "full_name": f"Guest {short_id}",
                 "role": "user",
                 "created_at": int(time.time()),
             }
-            await self.db.users.insert_one(user_doc)
+            try:
+                await self.db.users.insert_one(user_doc)
+                user = user_doc
+            except DuplicateKeyError:
+                user = await self.db.users.find_one({"device_id": device_id})
+                if not user:
+                    raise
         else:
             user_id = str(user["_id"])
+
+        if user.get("is_active") is False:
+            raise HTTPException(403, "Account is disabled")
+        user_id = str(user["_id"])
 
         return {
             "accessToken": create_access_token(user_id),
@@ -151,29 +175,39 @@ class MobileAuthService:
         )
         if audience and "," in audience:
             audience = [aud.strip() for aud in audience.split(",") if aud.strip()]
+        if not audience:
+            raise HTTPException(503, "Google login is not configured on the server")
 
         try:
-            idinfo = google_id_token.verify_oauth2_token(
-                token, google_requests.Request(), audience=audience
+            request = google_requests.Request()
+            def bounded_request(*args, **kwargs):
+                kwargs.setdefault("timeout", 10)
+                return request(*args, **kwargs)
+            idinfo = await asyncio.to_thread(
+                google_id_token.verify_oauth2_token,
+                token, bounded_request, audience=audience,
             )
-        except (ValueError, GoogleAuthError) as e:
+        except TransportError as exc:
+            raise HTTPException(503, "Cannot reach Google token verification service") from exc
+        except (ValueError, GoogleAuthError) as exc:
             raise HTTPException(
-                status_code=400,
-                detail=f"Invalid Google token: {str(e)}",
-            )
-        except Exception as e:
+                status_code=401,
+                detail="Invalid Google token",
+            ) from exc
+        except Exception as exc:
             raise HTTPException(
-                status_code=400,
-                detail=f"Google authentication failed: {str(e)}",
-            )
+                status_code=503,
+                detail="Google authentication is temporarily unavailable",
+            ) from exc
 
         email = idinfo.get("email")
-        if not email:
+        if not email or idinfo.get("email_verified") is not True or not idinfo.get("sub"):
             raise HTTPException(
                 status_code=400,
-                detail="Google token does not contain an email address",
+                detail="Google token must contain a verified email and subject",
             )
 
+        email = email.strip().lower()
         name = idinfo.get("name") or idinfo.get("given_name") or email.split("@")[0]
         picture = idinfo.get("picture")
         google_id = idinfo.get("sub")
@@ -202,6 +236,10 @@ class MobileAuthService:
             }
             await self.db.users.insert_one(user_doc)
         else:
+            if user.get("is_active") is False:
+                raise HTTPException(403, "Account is disabled")
+            if user.get("google_id") and user["google_id"] != google_id:
+                raise HTTPException(401, "Google account does not match the linked account")
             user_id = str(user["_id"])
             updates = {"updated_at": int(time.time())}
             if not user.get("google_id") and google_id:
@@ -282,7 +320,7 @@ class MobileAuthService:
         return t("change_password_success", locale)
 
     async def get_profile(self, user_id: str, locale: str = "vi") -> dict:
-        user = await self.db.users.find_one({"_id": user_id})
+        user = await self.db.users.find_one(self.user_id_query(user_id))
         if not user:
             raise HTTPException(status_code=404, detail=t("user_not_found", locale))
         return {
@@ -317,12 +355,15 @@ class MobileAuthService:
 
     async def refresh_token(self, refresh_token_str: str, locale: str = "vi") -> dict:
         try:
-            payload = decode_token(refresh_token_str)
+            payload = decode_token(refresh_token_str, secret=settings.REFRESH_TOKEN_SECRET or settings.SECRET_KEY)
             if payload.get("type") != "refresh":
                 raise HTTPException(status_code=400, detail=t("invalid_token", locale))
             user_id = payload.get("sub")
             if not user_id:
                 raise HTTPException(status_code=400, detail=t("invalid_token", locale))
+            user = await self.db.users.find_one(self.user_id_query(user_id))
+            if not user or user.get("is_active") is False:
+                raise HTTPException(401, "Account unavailable")
             return {
                 "accessToken": create_access_token(user_id),
                 "refreshToken": create_refresh_token(user_id),

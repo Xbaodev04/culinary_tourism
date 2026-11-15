@@ -735,8 +735,8 @@
 .owner-register-progress li[aria-current="step"] .owner-register-step-number { border-color: var(--ad-brand); background: var(--ad-brand); color: white; }
 .owner-register-progress li[data-completed="true"] .owner-register-step-number { border-color: #bfdbfe; background: #dbeafe; color: var(--ad-brand-dark); }
 .owner-register-field { display: grid; align-content: start; gap: 5px; color: #35465d; font-size: 13px; font-weight: 650; }
-.owner-register-field input { min-width: 0; width: 100%; border: 1px solid #d9e1eb; border-radius: 7px; padding: 8px 10px; font-weight: 400; }
-.owner-register-field input[aria-invalid="true"] { border-color: #b42318; }
+.owner-register-field :is(input, textarea) { min-width: 0; width: 100%; border: 1px solid #d9e1eb; border-radius: 7px; padding: 8px 10px; font-weight: 400; }
+.owner-register-field :is(input, textarea)[aria-invalid="true"] { border-color: #b42318; }
 .owner-register-field span { font-size: 12px; font-weight: 400; }
 .owner-register :is(a, button, input):focus-visible { outline: 2px solid #6493df; outline-offset: 2px; }
 .owner-register-photo { align-self: start; min-width: 0; padding: 16px; border: 1px solid var(--ad-line); border-radius: 9px; background: #f5f7fb; }

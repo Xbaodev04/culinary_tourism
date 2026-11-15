@@ -65,4 +65,8 @@ async def test_readiness_and_backlog_use_real_documents(client, admin_creds):
     }
     assert results[0]["summary"]["audio"]["failed"] == 1
     assert results[0]["summary"]["registrations"]["pending"] == 2
-    assert results[0]["operations"] == results[1]["operations"]  # current snapshot ignores days
+    snapshots = [{key: value for key, value in result["operations"].items() if key != "review_performance"}
+                 for result in results]
+    assert snapshots[0] == snapshots[1]  # current content/publication snapshot ignores days
+    assert results[0]["operations"]["review_performance"]["days"] == 7
+    assert results[1]["operations"]["review_performance"]["days"] == 30

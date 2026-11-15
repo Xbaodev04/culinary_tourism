@@ -30,6 +30,7 @@ async def make_registration(fernet, n=1, status="pending", cccd=CCCD, with_ciphe
     doc = {
         "user_id": user.inserted_id, "full_name": f"Chủ Quán {n}", "phone": f"09000000{n}",
         "poi_name": f"Quán Số {n}", "poi_address": "1 Vĩnh Khánh, Quận 4", "storefront_image_url": "/static/images/poi/x.webp",
+        "poi_description": DRAFT["original_description"],
         "status": status, "created_at": datetime.now(timezone.utc) - timedelta(hours=n),
     }
     if with_cipher:
@@ -148,6 +149,7 @@ async def test_approve_pinned_registration_publishes_poi(client, fernet):
         "poi_location": DRAFT["location"],
         "cccd_number": CCCD,
     }
+    registration["poi_description"] = "Fresh food and a welcoming restaurant experience."
     response = await client.post("/api/v1/admin/auth/register-owner", json=registration)
     assert response.status_code == 201, response.text
     rid = response.json()["id"]

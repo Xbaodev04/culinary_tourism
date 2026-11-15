@@ -2,9 +2,10 @@ import asyncio
 import logging
 from datetime import timedelta
 
-from pymongo.errors import DuplicateKeyError
+from pymongo.errors import DuplicateKeyError, PyMongoError
 
 from bson import ObjectId
+from fastapi import HTTPException
 
 from app.core.config import settings
 from app.core.database import get_db, mongo_transaction
@@ -13,7 +14,10 @@ from app.modules.audio.service import (
     DEFAULT_NEURAL_VOICES, SpeechTemporarilyUnavailable, SynthResult, TranslationRateLimited, tts_service,
 )
 from app.modules.audio.distributed_lease import (AudioSlotLease, HEARTBEAT_SECONDS, LEASE_SECONDS)
-from app.modules.audio.source_version import source_fingerprint
+from app.modules.audio.source_version import source_fingerprint, text_fingerprint, field_is_current
+from app.modules.audio.source_updates import refresh_audio_tasks
+from app.modules.audio import service as speech_module
+from app.core.path_security import resolve_safe_path
 from app.modules.audio.task_store import ACTIVE_STATUSES, audio_task_store, now, serialize
 
 logger = logging.getLogger("quan4.audio.tasks")
@@ -26,6 +30,14 @@ MAX_AUTO_SPEECH_RETRIES = 3
 
 def _ready_to_retry_filter(stamp):
     return {"$or": [{"retry_at": {"$exists": False}}, {"retry_at": {"$lte": stamp}}]}
+
+
+class AudioSourceChanged(ValueError):
+    """A source update should refresh the same task, not fail it."""
+
+
+class AudioTaskObsolete(ValueError):
+    """Cancelled, superseded or no longer owned by this worker."""
 
 
 class ActiveTaskExists(ValueError):
@@ -109,7 +121,7 @@ class AudioTaskManager:
     def _start(self, task_id: str) -> None:
         worker = self.workers.get(task_id)
         if worker and not worker.done():
-            # Worker cũ còn đang kết thúc (vd: vừa Pause rồi Resume ngay) → chạy lại khi nó xong.
+            # Worker cũ còn đang kết thúc (vd: vừa Pause rồi Resume ngay) → chạy lại khi nó xong.n-m
             self._restart.add(task_id)
             return
         self._restart.discard(task_id)
@@ -150,6 +162,14 @@ class AudioTaskManager:
         db = get_db()
         async with mongo_transaction() as tx:
             stamp = now()
+            current = await db["audio_tasks"].find_one({"_id": ObjectId(task_id)}, session=tx)
+            if current and current.get("source_hash") and ObjectId.is_valid(str(current.get("poi_id"))):
+                poi = await db["poi"].find_one({"_id": ObjectId(current["poi_id"])}, session=tx)
+                if not poi:
+                    raise ValueError("POI no longer exists")
+                base = await self._base_description(poi, session=tx)
+                if current["source_hash"] != self.source_fingerprint(poi, base):
+                    raise AudioSourceChanged("POI source changed before task completion")
             updated = await db["audio_tasks"].update_one(
                 {"_id": ObjectId(task_id), "status": "running", "lease_token": token,
                  "lease_until": {"$gt": stamp}},
@@ -202,7 +222,7 @@ class AudioTaskManager:
                     raise ValueError("Missing Vietnamese description")
                 fingerprint = self.source_fingerprint(poi, base)
                 if task.get("source_hash") and task["source_hash"] != fingerprint:
-                    raise ValueError("POI text changed; create a new audio task")
+                    raise AudioSourceChanged("POI source changed since the last checkpoint")
                 if not task.get("source_hash"):
                     # Legacy checkpoint: without provenance, redo ALL languages safely
                     # instead of skipping any possibly stale generated translations.
@@ -240,6 +260,17 @@ class AudioTaskManager:
                 await self._finish_transaction(task_id, lease.token)
         except asyncio.CancelledError:
             raise  # shutdown: lease expires/recovery resumes an abandoned claim
+        except AudioTaskObsolete:
+            pass  # An approved edit or user control already changed this task.
+        except AudioSourceChanged:
+            await self._refresh_task_source(task_id, lease.token)
+        except PyMongoError as exc:
+            if exc.has_error_label("TransientTransactionError"):
+                await self._retry_transaction_conflict(task_id, lease.token)
+            else:
+                await store.update_if(task_id, ("running",), lease_token=lease.token,
+                                      status="failed", error="Không thể lưu audio; hãy thử lại.", finished_at=now())
+                logger.exception("Audio database failure %s", task_id)
         except (TranslationRateLimited, SpeechTemporarilyUnavailable) as exc:
             speech_error = isinstance(exc, SpeechTemporarilyUnavailable)
             counter = "speech_retries" if speech_error else "translation_retries"
@@ -284,6 +315,36 @@ class AudioTaskManager:
                     await lease.release()
                 except Exception:
                     logger.exception("Could not release audio lease %s", task_id)
+            current = await store.get(task_id)
+            if (not self._stopping and current and current["status"] == "queued"
+                    and current.get("refresh_reason") and not current.get("retry_at")):
+                self._restart.add(task_id)
+
+    async def _refresh_task_source(self, task_id: str, token: str) -> None:
+        db = get_db()
+        async with mongo_transaction() as tx:
+            task = await db["audio_tasks"].find_one(
+                {"_id": ObjectId(task_id), "lease_token": token,
+                 "status": {"$in": ["running", "paused"]}}, session=tx)
+            if not task:
+                return
+            poi = await db["poi"].find_one({"_id": ObjectId(task["poi_id"])}, session=tx)
+            if not poi:
+                raise ValueError("POI no longer exists")
+            base = await self._base_description(poi, session=tx)
+            await refresh_audio_tasks(db, poi["_id"], poi.get("name", ""), base,
+                                      session=tx, task_filter={"_id": ObjectId(task_id), "lease_token": token})
+        audio_task_store._notify()
+
+    async def _retry_transaction_conflict(self, task_id: str, token: str) -> None:
+        for state in ("running", "paused"):
+            if await audio_task_store.update_if(
+                task_id, (state,), lease_token=token,
+                status="queued" if state == "running" else "paused", error=None,
+                refresh_reason="POI vừa được cập nhật; đang đồng bộ lại kết quả audio.",
+                unset=("lease_token", "lease_until"),
+            ):
+                break
 
     @staticmethod
     async def _base_description(poi: dict, session=None) -> str:
@@ -316,16 +377,28 @@ class AudioTaskManager:
         db = get_db()
         source_hash = source_hash or AudioTaskManager.source_fingerprint(poi, base)
         existing = await db["poi_localizations"].find_one({"poi_id": poi["_id"], "lang": lang})
-        valid = existing is not None and existing.get("source_hash") == source_hash
-        description = (existing or {}).get("description") if valid else None
+        description_valid = bool(existing and field_is_current(existing, "description", poi.get("name", ""), base))
+        title_valid = bool(existing and field_is_current(existing, "title", poi.get("name", ""), base))
+        description = (existing or {}).get("description") if description_valid else None
         if not description:
             description = base if lang == "vi" else await tts_service.translate(base, lang)
-        title = (existing or {}).get("title") if valid else None
+        title = (existing or {}).get("title") if title_valid else None
         if not title or (lang != "vi" and title == poi.get("name")):
             title = (poi.get("name") or "") if lang == "vi" else await tts_service.translate(poi.get("name") or "", lang)
         if not title or not title.strip():
             raise ValueError("Missing translated POI title")
-        result = await tts_service.synthesize(description, lang)
+        result = None
+        if description_valid and existing.get("audio_status") == "completed" and existing.get("audio_url"):
+            url = existing["audio_url"]
+            if url.startswith("/static/audio/"):
+                try:
+                    file = resolve_safe_path(speech_module.AUDIO_DIR, url.removeprefix("/static/audio/"))
+                    if file.suffix == ".mp3" and file.is_file() and file.stat().st_size > 0:
+                        result = SynthResult(url, True)
+                except (OSError, ValueError, HTTPException):
+                    pass
+        if result is None:
+            result = await tts_service.synthesize(description, lang)
         stamp = now()
 
         async with mongo_transaction() as tx:
@@ -335,22 +408,19 @@ class AudioTaskManager:
                      "lease_until": {"$gt": stamp},
                      "status": {"$in": ["running", "paused"]}}, session=tx)
                 if current is None:
-                    raise ValueError("Audio task was cancelled or lease lost")
+                    raise AudioTaskObsolete("Audio task was cancelled or superseded")
                 if lease_id:
                     slot = await db["audio_worker_slots"].find_one(
                         {"_id": lease_id, "token": lease_token,
                          "expires_at": {"$gt": stamp}}, session=tx)
                     if slot is None:
-                        raise ValueError("Audio global worker slot lease lost")
+                        raise AudioTaskObsolete("Audio global worker slot lease lost")
             latest_poi = await db["poi"].find_one({"_id": poi["_id"]}, session=tx)
-            if (not latest_poi
-                    or latest_poi.get("revision", 0) != poi.get("revision", 0)
-                    or latest_poi.get("name") != poi.get("name")
-                    or latest_poi.get("original_description") != poi.get("original_description")):
-                raise ValueError("POI changed while generating audio; please queue a new task")
+            if not latest_poi:
+                raise ValueError("POI no longer exists")
             latest_base = await AudioTaskManager._base_description(latest_poi, session=tx)
             if AudioTaskManager.source_fingerprint(latest_poi, latest_base) != source_hash:
-                raise ValueError("Vietnamese narrative changed while generating audio")
+                raise AudioSourceChanged("Vietnamese narration or POI title changed while generating audio")
             latest = await db["poi_localizations"].find_one(
                 {"poi_id": poi["_id"], "lang": lang}, session=tx)
             if (latest is None) != (existing is None) or (
@@ -367,7 +437,9 @@ class AudioTaskManager:
                     "title": title, "description": description,
                     "audio_url": result.url, "audio_status": "completed",
                     "source_hash": source_hash,
-                    "translation_origin": "manual" if valid and existing.get("translation_origin") == "manual" else "auto",
+                    "title_source_hash": text_fingerprint(poi.get("name", "")),
+                    "description_source_hash": text_fingerprint(base),
+                    "translation_origin": "manual" if description_valid and existing.get("translation_origin") == "manual" else "auto",
                     "is_fallback": False, "updated_at": stamp,
                 }, "$setOnInsert": {"created_at": stamp}},
                 upsert=True, session=tx,

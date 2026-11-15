@@ -1,3 +1,4 @@
+import useToastFeedback from '../hooks/useToastFeedback.js';
 import React, { useEffect, useState } from 'react';
 import axiosClient from '../../../api/axiosClient.js';
 import { useAuthStore } from '../../../store/authStore.js';
@@ -11,8 +12,8 @@ export default function RoleManagementPage() {
   const [selected, setSelected] = useState(null);
   const [name, setName] = useState('');
   const [priority, setPriority] = useState(5);
-  const [error, setError] = useState('');
-  const [notice, setNotice] = useState('');
+  const [error, setError] = useToastFeedback('error');
+  const [, setNotice] = useToastFeedback('success');
   const [busy, setBusy] = useState(false);
   const canCreate = hasPermission(current, 'role:create');
   const canUpdate = hasPermission(current, 'role:update');
@@ -50,7 +51,6 @@ export default function RoleManagementPage() {
   return <section className="space-y-4">
     <div><h1 className="text-xl font-bold">Vai trò & Phân quyền (Dynamic RBAC)</h1><p className="text-sm text-slate-600">Quyền super_admin luôn cố định.</p></div>
     {error && <div role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-800">{error}</div>}
-    {notice && <div role="status" className="rounded-lg bg-green-50 p-3 text-sm text-green-800">{notice}</div>}
     <div className="flex flex-wrap gap-3">
       {canCreate && <button className="rounded-lg bg-slate-900 px-4 py-2 text-sm text-white" onClick={() => { setSelected({ isNew: true, name: '', permissions: [] }); setName(''); setPriority(5); }}>+ Tạo vai trò</button>}
       {items.map((role) => <button key={role.name} className={`rounded-lg border px-4 py-2 text-sm ${selected?.name === role.name ? 'border-slate-900 bg-slate-200' : 'bg-white'}`} onClick={() => edit(role)}>{role.name} ({role.permissions.length})</button>)}

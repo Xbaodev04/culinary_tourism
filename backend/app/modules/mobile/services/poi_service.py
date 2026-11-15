@@ -8,6 +8,11 @@ from app.modules.mobile.utils.i18n import t
 
 
 class MobilePoiService:
+    @staticmethod
+    def _require_public(poi: dict) -> None:
+        if poi.get("is_active") is False:
+            raise HTTPException(403, detail={"code": "poi_not_public", "message": "Quán đã đóng cửa"})
+
     @property
     def db(self):
         return get_db()
@@ -184,6 +189,7 @@ class MobilePoiService:
         poi = await self._find_poi(poi_id)
         if not poi:
             return None
+        self._require_public(poi)
 
         raw_id = poi.get("_id")
         clean_id = str(raw_id) if raw_id is not None else str(poi.get("id", poi_id))
@@ -218,6 +224,7 @@ class MobilePoiService:
 
         return {
             "id": clean_id,
+            "is_active": True,
             "name": poi_name,
             "latitude": poi_lat,
             "longitude": poi_lng,
@@ -244,6 +251,7 @@ class MobilePoiService:
         poi = await self._find_poi(poi_id)
         if not poi:
             return []
+        self._require_public(poi)
 
         raw_id = poi.get("_id")
         clean_id = str(raw_id) if raw_id is not None else poi_id
@@ -318,6 +326,7 @@ class MobilePoiService:
         poi = await self._find_poi(poi_id)
         if not poi:
             return []
+        self._require_public(poi)
 
         raw_id = poi.get("_id")
         clean_id = str(raw_id) if raw_id is not None else poi_id

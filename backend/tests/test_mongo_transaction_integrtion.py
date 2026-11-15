@@ -13,6 +13,147 @@ pytestmark = pytest.mark.skipif(os.getenv('RUN_MONGO_TX_INTEGRATION') != '1',
 
 
 @pytest.mark.asyncio
+async def test_registration_description_commits_with_created_poi(monkeypatch):
+    from motor.motor_asyncio import AsyncIOMotorClient
+    from bson import ObjectId
+    from app.core import database
+    from app.core.config import settings
+    from app.modules.admin import registrations
+
+    client = AsyncIOMotorClient(settings.MONGO_URI, serverSelectionTimeoutMS=5000)
+    db_name = f'quan4_registration_narration_{uuid.uuid4().hex[:10]}'
+    db = client[db_name]
+    monkeypatch.setattr(database, 'mongo_client', client)
+    monkeypatch.setattr(database, 'db', db)
+    owner, rid = ObjectId(), ObjectId()
+    narration = 'The description submitted by the restaurant owner.'
+    try:
+        await db.users.insert_one({'_id': owner, 'role': 'poi_owner'})
+        await db.poi_owner_registrations.insert_one({'_id': rid, 'user_id': owner, 'status': 'pending',
+            'poi_name': 'Restaurant', 'poi_address': '12 Vinh Khanh', 'poi_description': narration,
+            'poi_location': {'type': 'Point', 'coordinates': [106.703, 10.76]}})
+        for collection in ('poi', 'owner_notifications', 'audit_logs', 'system_meta'):
+            await db.create_collection(collection)
+        admin = {'id': str(ObjectId()), 'permissions': ['poi:create', 'poi:update', 'poi:toggle']}
+        audit = registrations.write_audit_event
+
+        async def fail_audit(*args, **kwargs):
+            raise RuntimeError('registration audit unavailable')
+
+        monkeypatch.setattr(registrations, 'write_audit_event', fail_audit)
+        with pytest.raises(RuntimeError, match='registration audit unavailable'):
+            await registrations.review_registration(str(rid), 'approve', '', admin, None)
+        assert await db.poi.count_documents({}) == 0
+        assert (await db.poi_owner_registrations.find_one({'_id': rid}))['status'] == 'pending'
+        monkeypatch.setattr(registrations, 'write_audit_event', audit)
+        approved = await registrations.review_registration(str(rid), 'approve', '', admin, None)
+        poi = await db.poi.find_one({'_id': ObjectId(approved['poi_id'])})
+        assert poi['original_description'] == narration and poi['is_active'] is True
+    finally:
+        with suppress(Exception):
+            await client.drop_database(db_name)
+        client.close()
+
+
+@pytest.mark.asyncio
+async def test_owner_source_update_and_queue_refresh_are_atomic(monkeypatch):
+    from datetime import timedelta
+    from motor.motor_asyncio import AsyncIOMotorClient
+    from bson import ObjectId
+    from app.core import database
+    from app.core.config import settings
+    from app.modules.admin.poi_management import invalidate_narrations
+    from app.modules.audio.source_version import source_fingerprint
+    from app.modules.audio.task_store import now
+
+    client = AsyncIOMotorClient(settings.MONGO_URI, serverSelectionTimeoutMS=5000)
+    db_name = f'quan4_owner_audio_update_{uuid.uuid4().hex[:10]}'
+    db = client[db_name]
+    monkeypatch.setattr(database, 'mongo_client', client)
+    monkeypatch.setattr(database, 'db', db)
+    pid, tid = ObjectId(), ObjectId()
+    try:
+        await db.poi.insert_one({'_id': pid, 'name': 'Old', 'original_description': 'Narration'})
+        await db.poi_localizations.insert_one({'poi_id': pid, 'lang': 'en', 'title': 'Old English',
+            'description': 'Narration English', 'audio_url': '/static/audio/existing.mp3', 'audio_status': 'completed',
+            'source_hash': source_fingerprint('Old', 'Narration')})
+        await db.audio_tasks.insert_one({'_id': tid, 'poi_id': str(pid), 'status': 'running',
+            'done': 1, 'lease_token': 'old-worker', 'lease_until': now() + timedelta(minutes=5)})
+
+        async def edit(session):
+            await db.poi.update_one({'_id': pid}, {'$set': {'name': 'New'}}, session=session)
+            await invalidate_narrations(db, pid, 'New', 'Narration', name_changed=True, desc_changed=False,
+                previous_name='Old', previous_description='Narration', session=session)
+
+        with pytest.raises(RuntimeError, match='rollback'):
+            async with database.mongo_transaction() as session:
+                await edit(session)
+                raise RuntimeError('rollback')
+        assert (await db.poi.find_one({'_id': pid}))['name'] == 'Old'
+        assert (await db.audio_tasks.find_one({'_id': tid}))['lease_token'] == 'old-worker'
+        assert (await db.poi_localizations.find_one({'poi_id': pid, 'lang': 'en'}))['title'] == 'Old English'
+
+        async with database.mongo_transaction() as session:
+            await edit(session)
+        task = await db.audio_tasks.find_one({'_id': tid})
+        assert task['status'] == 'queued' and task['done'] == 0 and 'lease_token' not in task
+        localization = await db.poi_localizations.find_one({'poi_id': pid, 'lang': 'en'})
+        assert localization['title'] is None and localization['audio_url'] == '/static/audio/existing.mp3'
+    finally:
+        with suppress(Exception):
+            await client.drop_database(db_name)
+        client.close()
+
+
+@pytest.mark.asyncio
+async def test_approved_description_and_new_audio_job_commit_atomically(monkeypatch):
+    from motor.motor_asyncio import AsyncIOMotorClient
+    from bson import ObjectId
+    from app.core import database
+    from app.core.config import settings
+    from app.modules.admin import audit
+    from app.modules.admin.submissions import review_submission
+
+    client = AsyncIOMotorClient(settings.MONGO_URI, serverSelectionTimeoutMS=5000)
+    db_name = f'quan4_approved_audio_{uuid.uuid4().hex[:10]}'
+    db = client[db_name]
+    monkeypatch.setattr(database, 'mongo_client', client)
+    monkeypatch.setattr(database, 'db', db)
+    pid, sid = ObjectId(), ObjectId()
+    try:
+        await db.poi.insert_one({'_id': pid, 'name': 'Restaurant', 'original_description': 'Old', 'revision': 1})
+        await db.poi_submissions.insert_one({'_id': sid, 'poi_id': pid, 'status': 'pending',
+            'proposed_changes': {'original_description': 'Approved narration'}})
+        for collection in ('poi_localizations', 'audio_tasks', 'system_meta', 'audit_logs'):
+            await db.create_collection(collection)
+        await db.audio_tasks.create_index('poi_id', unique=True,
+            partialFilterExpression={'status': {'$in': ['queued', 'running', 'paused']}})
+        real_audit = audit.write_audit_event
+
+        async def fail_audit(*args, **kwargs):
+            raise RuntimeError('approval audit unavailable')
+
+        monkeypatch.setattr(audit, 'write_audit_event', fail_audit)
+        with pytest.raises(RuntimeError, match='approval audit unavailable'):
+            await review_submission(str(sid), 'approve', '', 1, {'id': str(ObjectId())}, None)
+        assert (await db.poi.find_one({'_id': pid}))['original_description'] == 'Old'
+        assert (await db.poi_submissions.find_one({'_id': sid}))['status'] == 'pending'
+        assert await db.audio_tasks.count_documents({}) == 0
+        assert await db.poi_localizations.count_documents({}) == 0
+
+        monkeypatch.setattr(audit, 'write_audit_event', real_audit)
+        result = await review_submission(str(sid), 'approve', '', 1, {'id': str(ObjectId())}, None)
+        task = await db.audio_tasks.find_one({'_id': ObjectId(result['audio_task_id'])})
+        assert task['status'] == 'queued' and task['languages'] == ['vi', 'en', 'zh', 'ja', 'ko']
+        assert (await db.poi.find_one({'_id': pid}))['original_description'] == 'Approved narration'
+        assert (await db.poi_submissions.find_one({'_id': sid}))['status'] == 'approved'
+    finally:
+        with suppress(Exception):
+            await client.drop_database(db_name)
+        client.close()
+
+
+@pytest.mark.asyncio
 async def test_rollback_across_collections(monkeypatch):
     from motor.motor_asyncio import AsyncIOMotorClient
     from app.core import database

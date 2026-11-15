@@ -1,3 +1,4 @@
+import useToastFeedback from '../hooks/useToastFeedback.js';
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import QRCode from "react-qr-code";
 import maplibregl from "maplibre-gl";
@@ -334,12 +335,12 @@ function POIForm({ poi, saving, error, onSave, onClose }) {
 }
 
 function EnglishForm({ poi, onClose, onSaved }) {
-  const [title, setTitle] = useState(poi.activation?.en?.title || "");
+  const [title, setTitle] = useState(poi.english_localization?.title || "");
   const [description, setDescription] = useState(
-    poi.activation?.en?.description || "",
+    poi.english_localization?.description || "",
   );
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
+  const [error, setError] = useToastFeedback('error');
   async function save(event) {
     event.preventDefault();
     setSaving(true);
@@ -372,8 +373,8 @@ function EnglishForm({ poi, onClose, onSaved }) {
           Bản dịch tiếng Anh · {poi.name}
         </h3>
         <p className="text-sm text-slate-600">
-          Mọi chỉnh sửa nội dung EN đều đặt audio về trạng thái chờ sinh lại.
-          Phải tắt công khai trước khi sửa bản dịch.
+          Thay đổi mô tả EN sẽ đặt audio về trạng thái chờ sinh lại.
+          Bạn có thể chỉnh sửa bản dịch khi quán đang công khai.
         </p>
         <label className="block text-sm">
           Tên quán tiếng Anh *
@@ -434,12 +435,12 @@ export default function POIManagementPage() {
   const [page, setPage] = useState(0);
   const [data, setData] = useState({ items: [], total: 0, wards: [] });
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
-  const [message, setMessage] = useState("");
+  const [error, setError] = useToastFeedback('error');
+  const [, setMessage] = useToastFeedback('success');
   const [englishPOI, setEnglishPOI] = useState(null);
   const [previewPoiId, setPreviewPoiId] = useState(null);
   const [editing, setEditing] = useState(null);
-  const [formError, setFormError] = useState("");
+  const [formError, setFormError] = useToastFeedback('error');
   const [saving, setSaving] = useState(false);
   const [busyId, setBusyId] = useState(null);
   const [refresh, setRefresh] = useState(0);
@@ -479,8 +480,7 @@ export default function POIManagementPage() {
   useEffect(() => {
     load();
   }, [load]);
-  // TTS runs asynchronously: revisit Activation Gate while Admin keeps this page open.
-  // This refresh does not generate any audio; it merely re-reads server-side readiness.
+  // Refresh audio metadata while background generation is running.
   useEffect(() => {
     const timer = window.setInterval(() => {
       if (document.visibilityState === "visible") setRefresh((n) => n + 1);
@@ -509,7 +509,6 @@ export default function POIManagementPage() {
     )
       return;
     const next = !poi.is_active;
-    if (next && !poi.activation?.ready) return;
     if (!window.confirm(`${next ? "Công khai" : "Ẩn"} quán "${poi.name}"?`))
       return;
     setBusyId(poi.id);
@@ -619,14 +618,6 @@ export default function POIManagementPage() {
           </select>
         </label>
       </div>
-      {message && (
-        <div
-          role="status"
-          className="rounded-lg border border-green-300 bg-green-50 p-3 text-sm text-green-900"
-        >
-          {message}
-        </div>
-      )}
       {error && (
         <div
           role="alert"
@@ -636,21 +627,17 @@ export default function POIManagementPage() {
         </div>
       )}
       <div className="overflow-x-auto rounded-xl border bg-white">
-        <table className="min-w-[1100px] w-full text-left text-sm">
+        <table className="min-w-[760px] w-full text-left text-sm">
           <thead className="bg-slate-50 text-xs uppercase text-slate-600">
             <tr>
               <th className="p-3">Quán ăn</th>
               <th className="p-3">Mã QR</th>
-              <th className="p-3">Phường</th>
-              <th className="p-3">Tọa độ (lng, lat)</th>
-              <th className="p-3">Activation Gate</th>
               <th className="p-3">Công khai</th>
               <th className="p-3">Thao tác</th>
             </tr>
           </thead>
           <tbody className="divide-y">
             {data.items.map((poi) => {
-              const ready = poi.activation?.ready;
               const pending = busyId === poi.id;
               return (
                 <tr key={poi.id}>
@@ -674,64 +661,6 @@ export default function POIManagementPage() {
                       </span>
                     </div>
                   </td>
-                  <td className="p-3 align-top">{poi.ward || "—"}</td>
-                  <td className="p-3 align-top font-mono text-xs">
-                    {(poi.location?.coordinates || [])
-                      .map((v) => Number(v).toFixed(6))
-                      .join(", ")}
-                  </td>
-                  <td className="max-w-xs p-3 align-top">
-                    <span
-                      className={`rounded-full px-2 py-1 text-xs font-semibold ${ready ? "bg-green-100 text-green-800" : "bg-amber-100 text-amber-800"}`}
-                    >
-                      {ready ? "Đạt" : "Chưa đạt"}
-                    </span>
-                    {!ready && (
-                      <ul className="mt-1 space-y-1 text-xs text-amber-800">
-                        {poi.activation?.reasons?.map((r) => (
-                          <li key={r}>• {r}</li>
-                        ))}
-                      </ul>
-                    )}
-                    {poi.activation?.en?.audio_url &&
-                      poi.activation.en.audio_status === "completed" && (
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setPreviewPoiId((id) =>
-                              id === poi.id ? null : poi.id,
-                            )
-                          }
-                          className="mt-2 block text-xs font-medium text-teal-700 underline"
-                          aria-expanded={previewPoiId === poi.id}
-                        >
-                          {previewPoiId === poi.id
-                            ? "Ẩn trình phát EN"
-                            : "▶ Nghe audio EN"}
-                        </button>
-                      )}
-                    {previewPoiId === poi.id && (
-                      <AudioPreviewPanel poiId={poi.id} onlyLang="en" compact />
-                    )}
-                    {hasPermission(user, "poi:update") && (
-                      <button
-                        onClick={() => setEnglishPOI(poi)}
-                        disabled={pending}
-                        className="mt-2 block text-xs font-medium text-teal-700 underline disabled:opacity-50"
-                      >
-                        Sửa bản dịch EN
-                      </button>
-                    )}
-                    {!ready && hasPermission(user, "poi:update") && (
-                      <button
-                        onClick={() => enqueueAudio(poi)}
-                        disabled={pending}
-                        className="mt-2 block text-xs font-medium text-teal-700 underline disabled:opacity-50"
-                      >
-                        Tạo audio EN
-                      </button>
-                    )}
-                  </td>
                   <td className="p-3 align-top">
                     <span
                       className={`block text-xs font-medium ${poi.is_active ? "text-green-700" : "text-slate-500"}`}
@@ -742,12 +671,7 @@ export default function POIManagementPage() {
                       hasPermission(user, "poi:update") && (
                         <button
                           onClick={() => changeActive(poi)}
-                          disabled={pending || (!poi.is_active && !ready)}
-                          title={
-                            !poi.is_active && !ready
-                              ? poi.activation?.reasons?.join("; ")
-                              : undefined
-                          }
+                          disabled={pending}
                           className={`${ACTION} mt-2 ${poi.is_active ? "bg-slate-200 text-slate-900" : "bg-green-700 text-white"}`}
                         >
                           {poi.is_active ? "Tắt công khai" : "Bật công khai"}
@@ -755,7 +679,7 @@ export default function POIManagementPage() {
                       )}
                   </td>
                   <td className="p-3 align-top">
-                    <div className="flex gap-2">
+                    <div className="flex flex-wrap gap-3">
                       {hasPermission(user, "poi:update") && (
                         <button
                           disabled={pending}
@@ -777,7 +701,23 @@ export default function POIManagementPage() {
                           Xóa
                         </button>
                       )}
+                      {hasPermission(user, "poi:update") && <>
+                        <button type="button" disabled={pending} onClick={() => setEnglishPOI(poi)}
+                          className="text-teal-700 underline">Sửa bản dịch EN</button>
+                        <button type="button" disabled={pending || !poi.original_description?.trim()}
+                          title={!poi.original_description?.trim() ? "Bổ sung mô tả quán trước khi tạo audio" : undefined}
+                          onClick={() => enqueueAudio(poi)} className="text-teal-700 underline disabled:opacity-50">
+                          Tạo audio EN
+                        </button>
+                      </>}
+                      {poi.english_localization?.audio_url && poi.english_localization.audio_status === "completed" && (
+                        <button type="button" onClick={() => setPreviewPoiId((id) => id === poi.id ? null : poi.id)}
+                          aria-expanded={previewPoiId === poi.id} className="text-teal-700 underline">
+                          {previewPoiId === poi.id ? "Ẩn trình phát EN" : "▶ Nghe audio EN"}
+                        </button>
+                      )}
                     </div>
+                    {previewPoiId === poi.id && <AudioPreviewPanel poiId={poi.id} onlyLang="en" compact />}
                   </td>
                 </tr>
               );
@@ -817,7 +757,7 @@ export default function POIManagementPage() {
           onSaved={() => {
             setEnglishPOI(null);
             setMessage(
-              "Đã lưu bản dịch EN. Hãy sinh lại audio để đủ điều kiện kích hoạt.",
+              "Đã lưu bản dịch EN. Bạn có thể tạo lại audio từ nội dung mới.",
             );
             reload();
           }}

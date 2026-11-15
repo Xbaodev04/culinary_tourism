@@ -1,3 +1,4 @@
+import useToastFeedback from '../hooks/useToastFeedback.js';
 import React, { useEffect, useState } from 'react';
 import { FiArrowDown, FiArrowUp, FiSearch } from 'react-icons/fi';
 import { LuChevronsUpDown } from 'react-icons/lu';
@@ -39,7 +40,7 @@ export default function ReviewQueue({ endpoint, title, searchPlaceholder, column
   const [result, setResult] = useState(null);
   const [version, setVersion] = useState(0);
   const [selected, setSelected] = useState(null);
-  const [message, setMessage] = useState('');
+  const [, setMessage] = useToastFeedback('success');
   const requestKey = JSON.stringify([status, query, page, limit, sort, version]);
   const current = result?.key === requestKey ? result : null;
   const data = current?.data;
@@ -113,7 +114,6 @@ export default function ReviewQueue({ endpoint, title, searchPlaceholder, column
               </label>
             </div>
           </div>
-          {message && <p role="status" className="rounded-lg bg-green-50 px-3 py-2 text-sm text-green-800">{message}</p>}
           {current?.error && (
             <div role="alert" className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-800">
               {current.error}{' '}

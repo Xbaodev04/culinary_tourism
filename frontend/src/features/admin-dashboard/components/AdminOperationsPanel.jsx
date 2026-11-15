@@ -99,21 +99,15 @@ export default function AdminOperationsPanel({ data, days, onDaysChange, user })
             <span>{number(readiness.published)} / {number(readiness.total)} POI</span>
           </div>
           <StatusRow label="Đang công khai" count={readiness.published} total={readiness.total} tone="ops-green" />
-          <StatusRow label="Đủ điều kiện nhưng chưa công khai" count={readiness.ready_unpublished} total={readiness.total} tone="ops-blue" />
-          <StatusRow label="Chưa đủ điều kiện công khai" count={readiness.blocked_unpublished} total={readiness.total} tone="ops-amber" />
-          {readiness.published_not_ready > 0 && (
-            <div className="ops-alert" role="status">
-              {number(readiness.published_not_ready)} POI đang công khai nhưng thiếu điều kiện EN/audio. Cần kiểm tra dữ liệu và cập nhật nội dung.
-            </div>
-          )}
-          <div className="ops-readiness-footnote">Điều kiện công khai: tên EN, mô tả EN, audio EN đã hoàn tất và có URL.</div>
+          <StatusRow label="Chưa công khai" count={readiness.total - readiness.published} total={readiness.total} tone="ops-blue" />
+          <div className="ops-readiness-footnote">Admin chủ động bật hoặc tắt công khai từng POI trong POI Master.</div>
         </Section>
         <Section title="Chất lượng nội dung" description="Các vấn đề cần hoàn thiện trên toàn bộ POI; một POI có thể thiếu nhiều mục.">
           <div className="ops-quality-list">
             <div><span>Thiếu tên hoặc mô tả tiếng Anh</span><strong>{number(readiness.missing_english_content)}</strong></div>
             <div><span>Chưa có audio tiếng Anh hợp lệ</span><strong>{number(readiness.missing_english_audio)}</strong></div>
             <div><span>POI đã gắn chủ sở hữu</span><strong>{number(readiness.linked_to_owner)}</strong></div>
-            <div><span>POI đầy đủ điều kiện EN + audio</span><strong>{number(readiness.ready)}</strong></div>
+            <div><span>POI có nội dung và audio EN</span><strong>{number(readiness.ready)}</strong></div>
           </div>
           <p className="ops-hint">Chỉ số lấy từ trạng thái hiện tại của POI và `poi_localizations`, không phụ thuộc khoảng ngày.</p>
         </Section>
@@ -124,7 +118,7 @@ export default function AdminOperationsPanel({ data, days, onDaysChange, user })
           <WorkRow title="Xác minh đăng ký chủ quán" count={summary.registrations.pending} extra={`${number(overdue.registrations)} hồ sơ chờ trên 48 giờ`} href="/admin/registrations" permission="user:read" user={user} tone="ops-amber-text" />
           <WorkRow title="Duyệt đề xuất thay đổi POI" count={summary.submissions.pending} extra={`${number(overdue.submissions)} đề xuất chờ trên 48 giờ`} href="/admin/submissions" permission="poi:approve" user={user} tone="ops-amber-text" />
           <WorkRow title="Kiểm tra tác vụ audio thất bại" count={summary.audio.failed} extra="Kiểm tra log và khởi chạy lại khi phù hợp" href="/admin/audio-tasks" permission="poi:update" user={user} tone="ops-red-text" />
-          <WorkRow title="Hoàn thiện POI chưa công khai" count={readiness.blocked_unpublished} extra="Thiếu bản dịch hoặc audio EN theo activation gate" href="/admin/pois" permission="poi:update" user={user} />
+          <WorkRow title="Bổ sung audio tiếng Anh" count={readiness.missing_english_audio} extra="Theo dõi nội dung audio độc lập với trạng thái công khai" href="/admin/pois" permission="poi:update" user={user} />
         </div>
       </Section>
 

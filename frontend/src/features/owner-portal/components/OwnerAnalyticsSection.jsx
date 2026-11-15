@@ -26,11 +26,11 @@ const languageNames = {
   ko: "Tiếng Hàn",
 };
 const metrics = {
-  views: { name: "Lượt xem chi tiết", color: "#9a3412" },
-  search_selections: { name: "Lượt chọn từ tìm kiếm", color: "#1d4ed8" },
-  audio_starts: { name: "Lượt bắt đầu nghe", color: "#9a3412" },
+  audio_starts: { name: "Lượt nghe thuyết minh", color: "#9a3412" },
   audio_completions: { name: "Lượt nghe hết", color: "#047857" },
   listen_seconds: { name: "Tổng thời lượng nghe", color: "#0f766e" },
+  views: { name: "Lượt xem chi tiết", color: "#9a3412" },
+  search_selections: { name: "Lượt chọn từ tìm kiếm", color: "#1d4ed8" },
 };
 
 function duration(seconds) {
@@ -188,6 +188,10 @@ export default function OwnerAnalyticsSection({ shops, demo }) {
   useEffect(() => {
     if (demo || !poiId) return;
     const controller = new AbortController();
+    let pending = false;
+    function refresh() {
+      if (pending || document.visibilityState === 'hidden') return;
+      pending = true;
     axiosClient
       .get("/owner/analytics", { params: { poi_id: poiId, days }, signal: controller.signal })
       .then(({ data }) => {
@@ -195,18 +199,27 @@ export default function OwnerAnalyticsSection({ shops, demo }) {
       })
       .catch((error) => {
         if (!controller.signal.aborted) {
-          setRequest({ key: requestKey, error: apiErrorMessage(error, "Không tải được thống kê.") });
+          setRequest((previous) => ({ key: requestKey,
+            data: previous?.key === requestKey ? previous.data : undefined,
+            error: apiErrorMessage(error, "Không tải được thống kê.") }));
         }
-      });
-    return () => controller.abort();
+      }).finally(() => { pending = false; });
+    }
+    refresh();
+    const timer = setInterval(refresh, 30000);
+    document.addEventListener('visibilitychange', refresh);
+    return () => {
+      controller.abort(); clearInterval(timer);
+      document.removeEventListener('visibilitychange', refresh);
+    };
   }, [demo, poiId, days, requestKey]);
 
   return (
     <section aria-labelledby="owner-analytics-title" className="space-y-4 rounded-xl border border-amber-100 bg-amber-50/40 p-4 sm:p-6">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h2 id="owner-analytics-title" className="text-lg font-bold text-slate-900">Thống kê tương tác</h2>
-          <p className="mt-1 text-sm text-slate-600">Theo dõi cách khách khám phá quán và nghe thuyết minh.</p>
+          <h2 id="owner-analytics-title" className="text-lg font-bold text-slate-900">Thống kê nghe thuyết minh và tương tác</h2>
+          <p className="mt-1 text-sm text-slate-600">Mỗi lượt phát mới tính một lượt nghe; tạm dừng và tiếp tục không tính thêm. Tự cập nhật mỗi 30 giây.</p>
         </div>
         {(demo || poiId) && (
           <div className="flex min-w-0 flex-wrap gap-3">

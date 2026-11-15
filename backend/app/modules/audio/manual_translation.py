@@ -9,7 +9,7 @@ from fastapi import HTTPException
 
 from app.core.database import get_db, mongo_transaction
 from app.modules.admin.audit import write_audit_event
-from app.modules.audio.source_version import source_fingerprint
+from app.modules.audio.source_version import source_fingerprint, text_fingerprint
 from app.modules.audio.task_store import audio_task_store, now
 
 LANGS = frozenset(("en", "zh", "ja", "ko"))
@@ -63,8 +63,6 @@ async def save_task_manual_translation(
             raise HTTPException(409, "Tác vụ cũ thiếu phiên bản nguồn; hãy hủy và tạo tác vụ mới")
         if task.get("source_hash") and task["source_hash"] != fingerprint:
             raise HTTPException(409, "Mô tả gốc đã đổi; cần tạo tác vụ mới")
-        if poi.get("is_active") and lang == "en":
-            raise HTTPException(409, "Hãy ẩn quán trước khi sửa bản dịch tiếng Anh")
 
         # Pausing the retry atomically with the translation write avoids a race
         # with the supervisor claiming a due queued task on another API worker.
@@ -80,6 +78,8 @@ async def save_task_manual_translation(
             {"poi_id": poi_id, "lang": lang},
             {"$set": {"title": title, "description": description,
                       "source_hash": fingerprint, "translation_origin": "manual",
+                      "title_source_hash": text_fingerprint(poi.get("name") or ""),
+                      "description_source_hash": text_fingerprint(base),
                       "audio_status": "pending", "audio_url": None,
                       "is_fallback": False, "updated_at": stamp},
              "$setOnInsert": {"created_at": stamp}},

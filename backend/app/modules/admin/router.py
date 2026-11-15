@@ -223,7 +223,7 @@ async def register_owner_with_image(request: Request):
 
 
 # ==========================================
-# 2. POI Management & Activation Gate
+# 2. POI Management & Publication
 # ==========================================
 @router.get("/pois")
 async def list_admin_pois(
@@ -240,6 +240,8 @@ async def list_admin_pois(
 @router.post("/pois", status_code=201)
 async def create_poi(payload: POICreateRequest, request: Request,
                      user: dict = Depends(require_permission("poi:create"))):
+    if payload.is_active and "poi:toggle" not in user["permissions"]:
+        raise HTTPException(403, "Thiếu quyền poi:toggle")
     return await create_master_poi(payload, user, _client_ip(request))
 
 
@@ -293,7 +295,7 @@ async def get_admin_poi(poi_id: str, _: dict = Depends(require_permission("poi:r
 @router.patch("/pois/{poi_id}")
 async def update_admin_poi(poi_id: str, payload: POIUpdateRequest, request: Request,
                            user: dict = Depends(require_permission("poi:update"))):
-    # Activation requires poi:toggle permission as well as poi:update.
+    # Publication is an explicit Admin decision protected by poi:toggle.
     if payload.is_active is not None and "poi:toggle" not in user["permissions"]:
         raise HTTPException(403, "Thiếu quyền poi:toggle")
     return await update_master_poi(poi_id, payload, user, _client_ip(request))
@@ -361,7 +363,7 @@ async def review_owner_registration(
     """Duyệt và gắn quán, bổ sung liên kết cho hồ sơ cũ hoặc từ chối hồ sơ."""
     return await review_registration(
         reg_id, decision.action, decision.admin_note, user, _client_ip(request), decision.poi_id, decision.draft,
-        poi_location=decision.poi_location,
+        poi_location=decision.poi_location, poi_description=decision.poi_description,
     )
 
 
@@ -412,9 +414,25 @@ class AudioTaskCreateRequest(BaseModel):
     languages: list[Literal["vi", "en", "zh", "ja", "ko"]] | None = Field(default=None, min_length=1)
 
 
+@router.get("/dashboard/online-visitors")
+async def online_visitors(_: dict = Depends(require_permission("analytics:view"))):
+    from app.modules.mobile.presence import online_snapshot
+    return await online_snapshot()
+
+
 @router.get("/audio-tasks")
 async def list_audio_tasks(_: dict = Depends(require_permission("poi:update"))):
     return {"items": await audio_task_store.list()}
+
+
+@router.get("/audio-tasks/eligible-pois")
+async def audio_creation_candidates(
+    q: str | None = Query(None, max_length=100),
+    limit: int = Query(30, ge=1, le=200), skip: int = Query(0, ge=0),
+    _: dict = Depends(require_permission("poi:update")),
+):
+    from app.modules.audio.eligibility import list_audio_candidates
+    return await list_audio_candidates(q, limit, skip)
 
 
 @router.get("/audio-tasks/stream")
@@ -431,7 +449,14 @@ async def stream_audio_tasks(request: Request, _: dict = Depends(require_permiss
 async def create_audio_task(
     payload: AudioTaskCreateRequest, request: Request, user: dict = Depends(require_permission("poi:update"))
 ):
-    """Xếp hàng sinh audio (dịch + TTS) cho một quán. Body: {"poi_id": "...", "languages": ["en", ...]}."""
+    """Body {poi_id}: mặc định tạo vi/en/zh/ja/ko. languages hỗ trợ client cũ."""
+    if payload.languages is None:
+        from bson import ObjectId
+        from app.core.database import get_db
+        from app.modules.audio.eligibility import poi_has_complete_audio
+        poi = await get_db()["poi"].find_one({"_id": ObjectId(payload.poi_id)}) if ObjectId.is_valid(payload.poi_id) else None
+        if poi and await poi_has_complete_audio(poi):
+            raise HTTPException(409, "Quán đã có đủ audio cho 5 ngôn ngữ. Hãy làm mới danh sách quán.")
     try:
         task_id = await audio_task_manager.enqueue_poi_audio_task(
             payload.poi_id, payload.languages, actor_id=user["id"], actor_ip=_client_ip(request),

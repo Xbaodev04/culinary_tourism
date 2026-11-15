@@ -12,7 +12,7 @@ from pydantic import ValidationError
 
 from app.core.database import get_db, mongo_transaction
 from app.modules.admin.poi_management import (
-    bump_dataset, gate_for, now, oid, revision_query, serialize_poi, invalidate_narrations,
+    bump_dataset, now, oid, revision_query, invalidate_narrations,
 )
 from app.modules.admin.schemas import POIUpdateRequest
 
@@ -121,6 +121,7 @@ async def review_submission(sub_id, action, note, expected_revision, user, ip):
     db = get_db()
     sid = oid(sub_id, "submission")
     version = None
+    audio_task_id = None
     data = {}
     final_status = "approved" if action == "approve" else "rejected"
     async with mongo_transaction() as tx:
@@ -142,17 +143,18 @@ async def review_submission(sub_id, action, note, expected_revision, user, ip):
                 raise HTTPException(409, "POI đã đổi hoặc chưa xác nhận phiên bản; hãy tải lại Diff View")
             desc_changed = "original_description" in data and data["original_description"] != poi.get("original_description")
             name_changed = "name" in data and data["name"] != poi.get("name")
-            if (desc_changed or name_changed) and poi.get("is_active"):
-                raise HTTPException(409, "Phải tắt công khai quán trước khi duyệt thay đổi mô tả")
             updated = await db["poi"].update_one({"_id": pid, **revision_query(poi)},
                 {"$set": {**data, "updated_at": now()}, "$inc": {"revision": 1}}, session=tx)
             if not updated.modified_count:
                 raise HTTPException(409, "POI vừa thay đổi; tải lại Diff View")
             if desc_changed or name_changed:
-                await invalidate_narrations(
+                audio_task_id = await invalidate_narrations(
                     db, pid, data.get("name", poi.get("name", "")),
                     data.get("original_description", poi.get("original_description", "")),
                     name_changed=name_changed, desc_changed=desc_changed, session=tx,
+                    previous_name=poi.get("name", ""),
+                    previous_description=poi.get("original_description") or poi.get("description") or "",
+                    ensure_audio=desc_changed,
                 )
             version = await bump_dataset(session=tx)
         claim = await db["poi_submissions"].update_one({"_id": sid, "status": "pending"},
@@ -171,6 +173,13 @@ async def review_submission(sub_id, action, note, expected_revision, user, ip):
             }, session=tx)
         await write_audit_event(user["id"], f"poi.submission_{action}",
             f"submission:{sid}", ip,
-            {"poi_id": str(submission.get("poi_id")), "fields": list(data), "dataset_version": version}, session=tx)
+            {"poi_id": str(submission.get("poi_id")), "fields": list(data), "dataset_version": version,
+             "audio_task_id": audio_task_id}, session=tx)
+    if action == "approve":
+        from app.modules.audio.task_store import audio_task_store
+        audio_task_store._notify()
+        # The supervisor claims persisted queued jobs on its next cycle. Keeping
+        # dispatch out of this request also survives an API process restart.
     return {"id": str(sid), "status": final_status,
-            "poi_id": str(submission.get("poi_id")), "dataset_version": version}
+            "poi_id": str(submission.get("poi_id")), "dataset_version": version,
+            "audio_task_id": audio_task_id}

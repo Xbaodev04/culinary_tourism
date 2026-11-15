@@ -1,3 +1,4 @@
+import useToastFeedback from '../hooks/useToastFeedback.js';
 import React, { useState } from 'react';
 import axiosClient from '../../../api/axiosClient.js';
 import { useAuthStore } from '../../../store/authStore.js';
@@ -25,6 +26,7 @@ const columns = [
 ];
 
 function DiffValue({ field, value }) {
+  if (field === 'trigger_radius' && value != null) return <span>{value} m</span>;
   if (field === 'location' && value?.coordinates) {
     return <ShopLocationMap coordinates={value.coordinates} centerOn={value.coordinates} />;
   }
@@ -60,7 +62,7 @@ function SubmissionReview({ item, close, reviewed, reload }) {
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
   const [stale, setStale] = useState(false);
-  const [error, setError] = useState('');
+  const [error, setError] = useToastFeedback('error');
 
   async function review(action) {
     if (busy || stale) return;
@@ -69,10 +71,12 @@ function SubmissionReview({ item, close, reviewed, reload }) {
     setBusy(true);
     setError('');
     try {
-      await axiosClient.post(`/admin/submissions/${item.id}/review`, {
+      const { data } = await axiosClient.post(`/admin/submissions/${item.id}/review`, {
         action, admin_note: note.trim() || null, expected_revision: item.poi_revision,
       });
-      reviewed(action === 'approve' ? `Đã duyệt và cập nhật “${item.poi_name}”.` : 'Đã từ chối và gửi lý do cho chủ quán.');
+      reviewed(action === 'approve'
+        ? `Đã duyệt và cập nhật “${item.poi_name}”.${data.audio_task_id ? ' Audio cho 5 ngôn ngữ đã được xếp hàng cập nhật theo mô tả mới.' : ''}`
+        : 'Đã từ chối và gửi lý do cho chủ quán.');
     } catch (err) {
       setError(apiErrorMessage(err, 'Không thể xử lý đề xuất.'));
       if (err.response?.status === 409) {

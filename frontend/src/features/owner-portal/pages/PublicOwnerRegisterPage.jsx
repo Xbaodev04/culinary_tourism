@@ -15,6 +15,8 @@ const initial = {
   password_confirmation: "",
   poi_name: "",
   poi_address: "",
+  poi_description: "",
+  trigger_radius: "30",
   cccd_number: "",
 };
 const accountFields = [
@@ -234,9 +236,14 @@ export default function PublicOwnerRegisterPage() {
         issues.password_confirmation = "Mật khẩu nhập lại chưa khớp.";
     }
     if (step === 1 && !form.poi_name.trim()) issues.poi_name = "Hãy nhập tên quán.";
+    if (step === 1 && !form.poi_description.trim()) issues.poi_description = "Hãy nhập mô tả quán.";
+    if (step === 1 && form.poi_description.trim().length > 8000) issues.poi_description = "Mô tả tối đa 8000 ký tự.";
     if (step === 2) {
       if (!location) issues.poi_location = "Hãy tìm địa chỉ hoặc ghim vị trí trên bản đồ.";
       if (!form.poi_address.trim()) issues.poi_address = "Hãy nhập địa chỉ quán.";
+      const radius = Number(form.trigger_radius);
+      if (!Number.isInteger(radius) || radius < 5 || radius > 500)
+        issues.trigger_radius = "Bán kính phải là số nguyên từ 5 đến 500 mét.";
     }
     setFieldError(issues);
     return !Object.keys(issues).length && (step !== 1 || !photoError);
@@ -256,6 +263,7 @@ export default function PublicOwnerRegisterPage() {
     payload.cccd_number = payload.cccd_number.trim();
     payload.poi_location = { type: "Point", coordinates: location.coordinates };
     payload.poi_ward = location.ward;
+    payload.trigger_radius = Number(form.trigger_radius);
     try {
       let response;
       if (photo) {
@@ -408,7 +416,22 @@ export default function PublicOwnerRegisterPage() {
             )}
             {step === 1 && (
               <div className="owner-register-grid mt-4">
-                <div>{renderField(shopNameField)}</div>
+                <div className="space-y-4">
+                  {renderField(shopNameField)}
+                  <label className="owner-register-field">
+                    Mô tả quán *
+                    <textarea required rows={8} maxLength={8000}
+                      value={form.poi_description} disabled={submitting}
+                      placeholder="Giới thiệu món ăn đặc trưng, câu chuyện và trải nghiệm tại quán…"
+                      onChange={(event) => update("poi_description", event.target.value)}
+                      aria-invalid={Boolean(fieldError.poi_description)}
+                      aria-describedby="poi-description-hint" />
+                    {fieldError.poi_description && <span role="alert" className="text-sm text-red-700">{fieldError.poi_description}</span>}
+                    <span id="poi-description-hint" className="text-xs text-slate-600">
+                      Nội dung này được dùng làm bài thuyết minh audio cho du khách. Tối đa 8000 ký tự.
+                    </span>
+                  </label>
+                </div>
                 <aside className="owner-register-photo">
                   <h2 className="font-semibold">Ảnh mặt tiền quán</h2>
                   <p className="mt-1 text-sm text-slate-600">
@@ -481,6 +504,16 @@ export default function PublicOwnerRegisterPage() {
             )}
             {step === 2 && (
               <div className="mt-4 space-y-3">
+                <label className="owner-register-field">
+                  Bán kính kích hoạt audio (m) *
+                  <input required type="number" min={5} max={500} step={1}
+                    value={form.trigger_radius} disabled={submitting}
+                    onChange={(event) => update("trigger_radius", event.target.value)}
+                    aria-invalid={Boolean(fieldError.trigger_radius)} aria-describedby="radius-hint" />
+                  <span id="radius-hint" className={fieldError.trigger_radius ? "text-red-700" : "text-slate-500"}>
+                    {fieldError.trigger_radius || "Khoảng cách để tự phát thuyết minh khi du khách đến gần quán. Từ 5–500 m, mặc định 30 m."}
+                  </span>
+                </label>
                 <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
                   <label className="owner-register-field">
                     Địa chỉ quán
@@ -541,12 +574,12 @@ export default function PublicOwnerRegisterPage() {
                     ["Số CCCD", "•••• " + form.cccd_number.trim().slice(-4)],
                   ]} />
                 <ReviewSection title={steps[1]} disabled={submitting} onEdit={() => goToStep(1)}
-                  fields={[["Tên quán", form.poi_name], ["Ảnh mặt tiền", photo?.name || "Chưa tải ảnh"]]}>
+                  fields={[["Tên quán", form.poi_name], ["Mô tả quán", form.poi_description], ["Ảnh mặt tiền", photo?.name || "Chưa tải ảnh"]]}>
                   {preview && <img src={preview} alt="Ảnh mặt tiền quán đã chọn"
                     className="max-h-32 max-w-full rounded-lg object-contain" />}
                 </ReviewSection>
                 <ReviewSection title={steps[2]} disabled={submitting} onEdit={() => goToStep(2)}
-                  fields={[["Địa chỉ quán", form.poi_address]]}>
+                  fields={[["Địa chỉ quán", form.poi_address], ["Bán kính kích hoạt audio", `${form.trigger_radius} m`]]}>
                   <ShopLocationMap coordinates={location?.coordinates} disabled={submitting} />
                 </ReviewSection>
               </div>

@@ -137,16 +137,17 @@ class RegistrationPOIDraft(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     ward: str = Field(min_length=1, max_length=80)
     location: POILocation
-    original_description: str = Field(min_length=1, max_length=8000)
+    original_description: str | None = Field(default=None, min_length=1, max_length=8000)
 
 
 class RegistrationReviewRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     action: Literal["approve", "reject"]
     admin_note: Optional[str] = None
     poi_id: Optional[str] = Field(default=None, min_length=24, max_length=24)
     draft: RegistrationPOIDraft | None = None
     poi_location: POILocation | None = None
+    poi_description: str | None = Field(default=None, min_length=1, max_length=8000)
 
 
 class POIUpdateRequest(BaseModel):

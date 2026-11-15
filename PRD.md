@@ -8,7 +8,7 @@ Tài liệu yêu cầu sản phẩm cho website Chủ quán và Quản trị, ba
 
 Du khách cần tìm quán ăn ở Quận 4 theo vị trí, hiểu món ăn qua nội dung đa ngôn ngữ và tiếp tục tham quan khi kết nối không ổn định. Chủ quán cần một kênh cập nhật thực đơn và thông tin địa điểm. Quản trị viên cần kiểm tra chủ sở hữu, duyệt thay đổi và kiểm soát nội dung trước khi công khai.
 
-Mục tiêu MVP là chứng minh một luồng xuyên suốt. Chủ quán gửi hồ sơ, Admin xác minh và gắn quán, nội dung đạt điều kiện công khai, sau đó du khách tìm được quán và phát được thuyết minh trên điện thoại.
+Mục tiêu MVP là chứng minh một luồng xuyên suốt. Chủ quán gửi hồ sơ kèm mô tả, Admin xác minh và gắn quán, quyết định trạng thái công khai, sau đó du khách tìm được quán và phát được thuyết minh trên điện thoại.
 
 | Người dùng | Việc cần hoàn thành |
 | --- | --- |
@@ -31,11 +31,11 @@ Trang gốc website dẫn tới đăng nhập chung tại `/admin/login`. Chủ 
 
 ## 3. Luồng đưa quán từ hồ sơ lên ứng dụng du khách
 
-1. **Chủ quán gửi hồ sơ.** Nhập thông tin liên hệ, thông tin quán, CCCD và đường dẫn ảnh mặt tiền nếu có. Tài khoản có thể đăng nhập để xem hồ sơ và thông báo trong lúc chờ xác minh.
-2. **Admin xác minh và đối chiếu POI Master.** Tìm theo tên và địa chỉ từ hồ sơ. Có thể rút gọn tiêu chí hoặc tìm từng trường để nhận ra quán được viết khác tên. Nếu tìm thấy đúng quán, chọn bản ghi để gắn. Nếu quán chưa có, xác nhận đã đối chiếu rồi bổ sung phường, tọa độ và mô tả tiếng Việt để tạo quán nháp. Quán nháp dùng tên và địa chỉ từ hồ sơ, xuất hiện trong POI Master ở trạng thái ẩn.
+1. **Chủ quán gửi hồ sơ.** Nhập thông tin liên hệ, thông tin quán, mô tả quán bắt buộc (tối đa 8000 ký tự), CCCD và ảnh mặt tiền nếu có. Mô tả là nguồn tạo bài thuyết minh audio. Tài khoản có thể đăng nhập để xem hồ sơ và thông báo trong lúc chờ xác minh.
+2. **Admin xác minh và đối chiếu POI Master.** Sử dụng tên, địa chỉ, ghim vị trí và mô tả do chủ quán gửi để tạo hoặc gắn POI. Mô tả đăng ký được lưu làm nguồn audio. Hồ sơ cũ thiếu vị trí hoặc mô tả cần được bổ sung khi duyệt. Admin có thể dùng thao tác duyệt và công khai, rồi điều chỉnh trạng thái trong POI Master.
 3. **Backend lưu quyết định.** Phê duyệt, liên kết quán và xác minh tài khoản được lưu trong cùng giao dịch. Nếu từ chối, Admin nhập lý do. Hệ thống lưu kết quả, ghi nhật ký và thông báo cho chủ quán. Với hồ sơ cũ đã duyệt nhưng chưa có liên kết, Admin có thể bổ sung quán trong tab **Đã duyệt**.
 4. **Chủ quán hoàn thiện dữ liệu.** Chủ quán cập nhật thực đơn và trạng thái mở cửa trực tiếp. Thay đổi hồ sơ quán như tên, địa chỉ, mô tả, ảnh và vị trí được gửi thành đề xuất. Admin so sánh dữ liệu hiện tại với nội dung gửi lên rồi duyệt hoặc từ chối kèm lý do.
-5. **Admin công khai quán.** Admin kiểm tra thông tin địa điểm, chuẩn bị tên và mô tả tiếng Anh, tạo audio tiếng Anh và kiểm tra điều kiện công khai. Khi đủ điều kiện, Admin bật công khai trong POI Master.
+5. **Admin công khai quán.** Admin kiểm tra thông tin địa điểm và tự bật/tắt công khai trong POI Master. Mô tả đăng ký của chủ quán là nguồn tạo audio; bản dịch và audio có thể được chuẩn bị độc lập với trạng thái công khai.
 6. **Du khách tiếp cận quán.** Mobile tải danh sách địa điểm công khai từ backend, hiển thị quán trên bản đồ và cho phép xem nội dung hoặc nghe audio. Hoàn tất bước này cần API đọc POI trả dữ liệu thực và app mobile tích hợp thành công.
 
 **Ba trạng thái độc lập.** Hồ sơ được duyệt xác nhận người quản lý. `is_open` mô tả quán đang mở hay đóng cửa. `is_active` quyết định quán đủ điều kiện được trả trong API công khai. Duyệt hồ sơ hoặc đổi trạng thái mở cửa không thay thế bước công khai.
@@ -59,7 +59,7 @@ Trang gốc website dẫn tới đăng nhập chung tại `/admin/login`. Chủ 
 | ADM-01 | Xác minh hồ sơ và gắn POI | Khi duyệt, Admin chọn đúng một quán có sẵn hoặc tạo nháp. Backend chặn gắn quán thuộc chủ khác và chặn tạo mới khi trùng tên, địa chỉ theo quy tắc so khớp. Các trường hợp tên hoặc địa chỉ được ghi khác cần Admin đối chiếu. |
 | ADM-02 | POI Master | Admin có quyền có thể tạo, xem, sửa, ẩn, công khai hoặc xóa POI theo quy trình. Quán mới ở trạng thái ẩn. Tọa độ, địa chỉ, ảnh và mô tả có thể được kiểm tra trước khi công khai. |
 | ADM-03 | Duyệt đề xuất | Admin xem giá trị trước và sau. Duyệt cập nhật đúng phiên bản POI đang xem. Nếu dữ liệu đã đổi, hệ thống yêu cầu tải lại. Từ chối cần lý do để chủ quán có thể chỉnh và gửi lại. |
-| ADM-04 | Điều kiện công khai | Backend chỉ cho bật công khai khi có tên, mô tả tiếng Anh và audio tiếng Anh đã hoàn tất. Nếu đổi tên hoặc mô tả của quán đang công khai, Admin tắt công khai trước, duyệt nội dung mới rồi hoàn thiện bản tiếng Anh và audio để bật lại. |
+| ADM-04 | Quản lý công khai | Admin có quyền tự bật/tắt công khai POI, kể cả khi chưa có bản dịch hoặc audio. Sửa nội dung không tự ẩn POI; hệ thống cập nhật hàng chờ audio theo phiên bản mới. |
 | ADM-05 | Nhà máy Audio | Admin tạo tác vụ dịch và sinh audio, theo dõi tiến độ và lỗi, nghe thử kết quả. Khi dịch tự động lỗi, có luồng nhập bản dịch thủ công để tiếp tục xử lý. |
 | ADM-06 | Vận hành và phân quyền | Dashboard tổng hợp dữ liệu theo quyền. Admin quản lý tài khoản, vai trò và xem nhật ký theo quyền được cấp. Các thao tác nhạy cảm như xem CCCD, duyệt hồ sơ và sửa POI có dấu vết kiểm tra. |
 
@@ -102,7 +102,7 @@ Trong đợt thử nghiệm, đo tỷ lệ hồ sơ duyệt có quán được g
 
 | Mốc | Trạng thái theo mã nguồn hiện tại | Điều kiện hoàn thành |
 | --- | --- | --- |
-| 1. Vận hành hai cổng web | Đã có đăng nhập, đăng ký, tìm và gắn quán hoặc tạo nháp khi duyệt, quản lý thực đơn, đề xuất, thông báo, POI Master và điều kiện công khai. AI và audio cần cấu hình dịch vụ tương ứng. | Chạy thử luồng mới và luồng bổ sung quán cho hồ sơ đã duyệt trên môi trường kiểm thử với MongoDB thật. |
+| 1. Vận hành hai cổng web | Đã có đăng nhập, đăng ký kèm mô tả, tìm và gắn quán hoặc tạo nháp khi duyệt, quản lý thực đơn, đề xuất, thông báo, POI Master và bật/tắt công khai do Admin quyết định. AI và audio cần cấu hình dịch vụ tương ứng. | Chạy thử luồng mới và luồng bổ sung quán cho hồ sơ đã duyệt trên môi trường kiểm thử với MongoDB thật. |
 | 2. Mobile đọc quán công khai | Hai route đọc danh sách và quán gần đây đã có khung, hiện trả danh sách rỗng. Hợp đồng đọc chi tiết và thực đơn cần hoàn thiện. | API trả dữ liệu thật, loại quán ẩn và được kiểm tra trên app mobile. |
 | 3. Audio và đa ngôn ngữ | Có luồng quản trị tác vụ audio. Luồng bản địa hóa theo yêu cầu, tải trước và gói chuỗi UI còn cần hoàn thiện. | Kiểm tra bản dịch, audio, ngôn ngữ dự phòng và xử lý lỗi trên thiết bị thật. |
 | 4. Ngoại tuyến và vận hành | API bản đồ trả thông tin gói mẫu. Đồng bộ thay đổi, nghiệm thu gói tải và đo lường có đồng ý là các hạng mục tiếp theo. | Kiểm tra tải gói, mất mạng, đồng bộ lại và quy tắc quyền riêng tư trước khi phát hành. |

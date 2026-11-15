@@ -9,7 +9,7 @@ from fastapi import HTTPException
 from app.core.config import settings
 from app.core.database import get_db, mongo_transaction
 from app.modules.admin.audit import write_audit_event
-from app.modules.admin.poi_management import bump_dataset, insert_poi, vietnamese_search_regex
+from app.modules.admin.poi_management import bump_dataset, insert_poi, vietnamese_search_regex, invalidate_narrations, revision_query
 from app.modules.admin.schemas import POICreateRequest, POILocation, RegistrationPOIDraft
 from app.modules.owner.service import purge_expired_registration_pii
 
@@ -59,6 +59,8 @@ def _serialize(doc: dict, email: Optional[str] = None) -> dict:
         "phone": doc.get("phone"),
         "poi_name": doc.get("poi_name"),
         "poi_address": doc.get("poi_address"),
+        "poi_description": doc.get("poi_description"),
+        "trigger_radius": doc.get("trigger_radius", 30),
         "poi_location": doc.get("poi_location"),
         "storefront_image_url": doc.get("storefront_image_url"),
         "status": doc.get("status"),
@@ -185,6 +187,32 @@ async def search_registration_pois(reg_id: str, name: str, address: str) -> dict
     }
 
 
+async def _link_registration_poi(reg, pid, uid, *, session, publish=False):
+    db = get_db()
+    poi = await db["poi"].find_one({"_id": pid}, session=session)
+    if not poi:
+        raise HTTPException(404, "Không tìm thấy quán để gắn")
+    description = reg["poi_description"]
+    fields = {"owner_id": uid, "original_description": description, "updated_at": _now()}
+    if "trigger_radius" in reg:
+        fields["trigger_radius"] = reg["trigger_radius"]
+    if publish:
+        fields.update(is_active=True, location=reg["poi_location"])
+    linked = await db["poi"].update_one(
+        {"_id": pid, **revision_query(poi),
+         "$or": [{"owner_id": None}, {"owner_id": {"$in": [uid, str(uid)]}}]},
+        {"$set": fields, "$inc": {"revision": 1}}, session=session,
+    )
+    if not linked.matched_count:
+        raise HTTPException(409, "Quán đã thay đổi hoặc đã được gắn cho chủ sở hữu khác")
+    previous = (poi.get("original_description") or poi.get("description") or "").strip()
+    if previous != description:
+        await invalidate_narrations(db, pid, poi.get("name", ""), description,
+            name_changed=False, desc_changed=True, previous_name=poi.get("name", ""),
+            previous_description=previous, session=session)
+    await bump_dataset(session=session)
+
+
 async def _publish_pinned_registration(reg, uid, user, ip, *, session) -> ObjectId:
     db = get_db()
     permissions = set(user.get("permissions", []))
@@ -206,15 +234,7 @@ async def _publish_pinned_registration(reg, uid, user, ip, *, session) -> Object
         raise HTTPException(403, f"Bạn không có quyền thực hiện thao tác này ({permission})")
     if matches:
         pid = matches[0]["_id"]
-        linked = await db["poi"].update_one(
-            {"_id": pid, "$or": [{"owner_id": None}, {"owner_id": {"$in": [uid, str(uid)]}}]},
-            {"$set": {"owner_id": uid, "location": reg["poi_location"],
-                      "is_active": True, "updated_at": _now()}, "$inc": {"revision": 1}},
-            session=session,
-        )
-        if not linked.matched_count:
-            raise HTTPException(409, "Quán đã được gắn cho một chủ sở hữu khác")
-        await bump_dataset(session=session)
+        await _link_registration_poi(reg, pid, uid, session=session, publish=True)
         return pid
 
     image = (reg.get("storefront_image_url") or "").strip()
@@ -223,7 +243,8 @@ async def _publish_pinned_registration(reg, uid, user, ip, *, session) -> Object
         address=address,
         ward=reg.get("poi_ward") or "Chưa xác định",
         location=reg["poi_location"],
-        original_description=f"{name} — {address}",
+        original_description=reg["poi_description"],
+        trigger_radius=reg.get("trigger_radius", 30),
         images=[image] if 0 < len(image) <= 2048 else [],
     )
     return await insert_poi(payload, user, ip, session=session, owner_id=uid, publish_on_approval=True)
@@ -232,12 +253,12 @@ async def _publish_pinned_registration(reg, uid, user, ip, *, session) -> Object
 async def review_registration(
     reg_id: str, action: str, note: Optional[str], user: dict, ip: Optional[str],
     poi_id: Optional[str] = None, draft: RegistrationPOIDraft | None = None,
-    *, poi_location: POILocation | None = None,
+    *, poi_location: POILocation | None = None, poi_description: str | None = None,
 ) -> dict:
     if action not in ("approve", "reject"):
         raise HTTPException(422, "action must be approve or reject")
     note = (note or "").strip()
-    if action == "reject" and (not note or any(value is not None for value in (poi_id, draft, poi_location))):
+    if action == "reject" and (not note or any(value is not None for value in (poi_id, draft, poi_location, poi_description))):
         raise HTTPException(422, "Từ chối hồ sơ cần lý do và không kèm quán")
     if len(note) > MAX_NOTE_LENGTH:
         raise HTTPException(422, f"admin_note tối đa {MAX_NOTE_LENGTH} ký tự")
@@ -266,6 +287,15 @@ async def review_registration(
         if not repairing:
             updates.update(status=new_status, admin_note=note or None,
                            reviewed_by=user.get("id"), reviewed_at=stamp)
+        if action == "approve":
+            stored_description = (reg.get("poi_description") or "").strip()
+            description = (stored_description or poi_description or
+                           (draft.original_description if draft else "") or "").strip()
+            if not description or len(description) > 8000:
+                raise HTTPException(422, "Hồ sơ chưa có mô tả quán. Hãy bổ sung mô tả trước khi duyệt.")
+            if stored_description and poi_description is not None and poi_description != description:
+                raise HTTPException(422, "Hồ sơ đã có mô tả do chủ quán gửi")
+            reg["poi_description"] = updates["poi_description"] = description
         if poi_location is not None:
             if reg.get("poi_location"):
                 raise HTTPException(422, "Hồ sơ đã có ghim vị trí của chủ quán")
@@ -293,20 +323,13 @@ async def review_registration(
                 image = (reg.get("storefront_image_url") or "").strip()
                 payload = POICreateRequest(
                     name=name, address=address, images=[image] if 0 < len(image) <= 2048 else [],
-                    **draft.model_dump(),
+                    trigger_radius=reg.get("trigger_radius", 30),
+                    **{**draft.model_dump(), "original_description": reg["poi_description"]},
                 )
                 linked_poi_id = await insert_poi(payload, user, ip, session=tx, owner_id=uid)
             else:
                 linked_poi_id = _object_id(poi_id, "POI ID")
-                linked = await db["poi"].update_one(
-                    {"_id": linked_poi_id, "$or": [{"owner_id": None}, {"owner_id": {"$in": [uid, str(uid)]}}]},
-                    {"$set": {"owner_id": uid, "updated_at": stamp}}, session=tx,
-                )
-                if not linked.matched_count:
-                    if not await db["poi"].find_one({"_id": linked_poi_id}, {"_id": 1}, session=tx):
-                        raise HTTPException(404, "Không tìm thấy quán để gắn")
-                    raise HTTPException(409, "Quán đã được gắn cho một chủ sở hữu khác")
-                await bump_dataset(session=tx)
+                await _link_registration_poi(reg, linked_poi_id, uid, session=tx)
         if linked_poi_id is not None:
             updates["linked_poi_id"] = linked_poi_id
             await db["users"].update_one({"_id": uid}, {"$set": {
@@ -334,6 +357,9 @@ async def review_registration(
              "linked_poi_id": str(linked_poi_id) if linked_poi_id else None,
              "created_draft": draft is not None}, session=tx)
 
+    if linked_poi_id:
+        from app.modules.audio.task_store import audio_task_store
+        audio_task_store._notify()
     result = {"id": reg_id, "status": new_status}
     if linked_poi_id:
         result["poi_id"] = str(linked_poi_id)

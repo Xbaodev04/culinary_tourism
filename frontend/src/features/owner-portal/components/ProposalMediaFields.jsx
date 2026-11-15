@@ -7,7 +7,7 @@ const ShopLocationMap = React.lazy(() => import("../../maps/ShopLocationMap.jsx"
 const photoTypes = ["image/jpeg", "image/png", "image/webp"];
 
 export default function ProposalMediaFields({
-  coverUrl, photo, onPhotoChange, address, coordinates, onLocationChange, onLookupChange, disabled,
+  coverUrl, photo, onPhotoChange, address, coordinates, onLocationChange, onLookupChange, disabled, showLocation = true,
 }) {
   const [preview, setPreview] = useState("");
   const [failedPhoto, setFailedPhoto] = useState(null);
@@ -97,7 +97,7 @@ export default function ProposalMediaFields({
   }
 
   return (
-    <div className="grid gap-4 sm:grid-cols-2">
+    <div className={showLocation ? "grid gap-4 sm:grid-cols-2" : "space-y-4"}>
       <section className="min-w-0 space-y-2" aria-label="Ảnh quán">
         <h3 className="text-sm font-semibold">Ảnh quán</h3>
         <div className="grid h-60 place-items-center overflow-hidden rounded-lg border border-slate-300 bg-slate-50">
@@ -135,7 +135,7 @@ export default function ProposalMediaFields({
         </div>
         {photoError && <p role="alert" className="text-sm text-red-700">{photoError}</p>}
       </section>
-      <section className="min-w-0 space-y-2" aria-label="Vị trí quán">
+      {showLocation && <section className="min-w-0 space-y-2" aria-label="Vị trí quán">
         <h3 className="text-sm font-semibold">Vị trí quán</h3>
         <React.Suspense fallback={<p role="status" className="h-60 text-sm text-slate-600">Đang tải bản đồ…</p>}>
           <ShopLocationMap coordinates={coordinates} centerOn={centerOn}
@@ -163,7 +163,7 @@ export default function ProposalMediaFields({
             ? <><span className="font-semibold">Địa chỉ ghim</span> · {resolvedAddress}</>
             : "Tìm theo địa chỉ, kéo ghim hoặc kéo bản đồ để chọn vị trí.")}
         </div>
-      </section>
+      </section>}
     </div>
   );
 }

@@ -1,5 +1,6 @@
 import React, { Suspense, lazy } from 'react';
-import { Navigate, Routes, Route } from 'react-router-dom';
+import { Navigate, Routes, Route, useLocation } from 'react-router-dom';
+import { Toaster } from 'react-hot-toast';
 
 // [Phúc] Phân hệ Chủ quán (Owner Portal — Lazy Loaded)
 const PublicOwnerRegisterPage = lazy(() => import('./features/owner-portal/pages/PublicOwnerRegisterPage.jsx'));
@@ -17,8 +18,12 @@ const AdminLayout = lazy(() => import('./features/admin-dashboard/AdminLayout.js
  * - `/owner/*`         -> Owner Portal B2B (Phúc)
  */
 export default function App() {
+  const location = useLocation();
   return (
     <Suspense fallback={<div className="p-6 text-center">Đang tải phân hệ...</div>}>
+      {location.pathname.startsWith('/admin') && <Toaster position="top-right"
+        containerStyle={{ zIndex: 10000 }}
+        toastOptions={{ duration: 5000, style: { maxWidth: 440 }, error: { duration: 7000 } }} />}
       <Routes>
         <Route path="/admin/login" element={<LoginPage />} />
         <Route path="/register/owner" element={<PublicOwnerRegisterPage />} />

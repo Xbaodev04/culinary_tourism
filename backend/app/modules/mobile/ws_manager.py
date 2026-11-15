@@ -1,88 +1,48 @@
-from datetime import datetime
-import json
-import logging
-from typing import Dict, Optional
-from fastapi import WebSocket
+"""Connection ownership is per session; counts are shared through MongoDB."""
+from uuid import uuid4
 
-logger = logging.getLogger(__name__)
+from app.modules.mobile.presence import online_snapshot, touch_session
 
 
 class ConnectionManager:
-    """Quản lý kết nối WebSocket và đếm người dùng online trong thời gian thực."""
-
     def __init__(self):
-        # Lưu kết nối active: {device_id: websocket}
-        self.active_connections: Dict[str, WebSocket] = {}
-        # Lưu thông tin online: {device_id: user_info}
-        self.online_users: Dict[str, dict] = {}
+        self.active_connections = {}
+        self.online_users = {}
 
-    async def connect(
-        self,
-        websocket: WebSocket,
-        device_id: str,
-        user_id: Optional[str] = None,
-        platform: Optional[str] = None,
-    ):
+    async def connect(self, websocket, device_id, user_id=None, platform=None):
         await websocket.accept()
-        self.active_connections[device_id] = websocket
-        self.online_users[device_id] = {
-            "device_id": device_id,
-            "user_id": user_id,
-            "platform": platform,
-            "connected_at": datetime.utcnow().isoformat(),
-            "last_activity": datetime.utcnow().isoformat(),
-        }
-        logger.info(f"User connected: {device_id}, Total: {len(self.online_users)}")
-        await self.broadcast_online_count()
+        session_id = uuid4().hex
+        self.active_connections[session_id] = websocket
+        self.online_users[session_id] = {"device_id": device_id, "platform": platform}
+        try:
+            await self.heartbeat(session_id)
+            await self.broadcast_online_count()
+        except Exception:
+            await self.disconnect(session_id)
+            raise
+        return session_id
 
-    def disconnect(self, device_id: str):
-        if device_id in self.active_connections:
-            del self.active_connections[device_id]
-        if device_id in self.online_users:
-            del self.online_users[device_id]
-        logger.info(f"User disconnected: {device_id}, Total: {len(self.online_users)}")
+    async def heartbeat(self, session_id):
+        info = self.online_users.get(session_id)
+        if info:
+            await touch_session(session_id, info["device_id"])
+
+    async def disconnect(self, session_id):
+        self.active_connections.pop(session_id, None)
+        self.online_users.pop(session_id, None)
+        # Release the socket, but retain the visit until its 30-minute expiry.
 
     async def broadcast_online_count(self):
-        mobile_users = {
-            k: v for k, v in self.online_users.items() if not k.startswith("admin-")
-        }
-        count = len(mobile_users)
-
-        message = {
-            "type": "online_count",
-            "count": count,
-            "timestamp": datetime.utcnow().isoformat(),
-            "users": list(mobile_users.values()),
-        }
-
-        disconnected_users = []
-        for device_id, websocket in list(self.active_connections.items()):
+        snapshot = await online_snapshot()
+        # Broadcast aggregates only; clients never receive other device IDs.
+        for session_id, websocket in list(self.active_connections.items()):
             try:
-                await websocket.send_json(message)
-            except Exception as e:
-                logger.error(f"Error sending message to {device_id}: {e}")
-                disconnected_users.append(device_id)
+                await websocket.send_json({"type": "online_count", "count": snapshot["online_count"]})
+            except Exception:
+                await self.disconnect(session_id)
 
-        for device_id in disconnected_users:
-            self.disconnect(device_id)
-
-    async def send_personal_message(self, message: str, device_id: str):
-        if device_id in self.active_connections:
-            try:
-                await self.active_connections[device_id].send_text(message)
-            except Exception as e:
-                logger.error(f"Error sending personal message to {device_id}: {e}")
-                self.disconnect(device_id)
-
-    def get_online_count(self) -> int:
-        return len({k: v for k, v in self.online_users.items() if not k.startswith("admin-")})
-
-    def get_online_users(self) -> list:
-        mobile_users = {
-            k: v for k, v in self.online_users.items() if not k.startswith("admin-")
-        }
-        return list(mobile_users.values())
+    async def get_online_count(self):
+        return (await online_snapshot())["online_count"]
 
 
 manager = ConnectionManager()
-

@@ -52,6 +52,10 @@ async def main(reset: bool) -> None:
             await db["poi_owner_registrations"].insert_one({
                 "user_id": user["_id"], "full_name": name, "phone": phone, "poi_name": poi_name,
                 "poi_address": address, "storefront_image_url": image,
+                "poi_description": (
+                    "Quán phục vụ các món ăn đặc trưng với nguyên liệu tươi, "
+                    "hương vị đậm đà và không gian gần gũi cho thực khách khám phá ẩm thực Quận 4."
+                ),
                 "cccd_encrypted": "v1:" + fernet.encrypt(cccd.encode()).decode(),
                 "status": "pending", "admin_note": None, "created_at": now - timedelta(hours=i * 5),
             })

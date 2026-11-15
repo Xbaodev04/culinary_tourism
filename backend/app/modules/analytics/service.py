@@ -94,6 +94,7 @@ class AnalyticsService:
                 languages[group["_id"]["language"]] += group["count"]
 
         return {
+            "poi_id": str(poi_id), "days": days, "generated_at": datetime.now(LOCAL_TZ).isoformat(),
             "totals": {metric: sum(day[metric] for day in daily.values()) for metric in METRICS},
             "daily": [{"date": date, **metrics} for date, metrics in daily.items()],
             "languages": [

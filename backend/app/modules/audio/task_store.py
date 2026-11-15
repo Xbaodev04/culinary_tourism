@@ -133,7 +133,25 @@ class AudioTaskStore:
         return normalize_doc(await self.collection.find_one({"poi_id": poi_id, "status": {"$in": list(ACTIVE_STATUSES)}}))
 
     async def list(self, limit: int = 50):
-        return [serialize(t) async for t in self.collection.find().sort("created_at", -1).limit(limit)]
+        """One current job per POI for both REST and SSE, before applying limit.
+
+        Finished jobs remain in history, but must not create duplicate shop rows.
+        Prefer active work (including paused/retried older jobs), then the newest
+        creation. ObjectId and string POI references share the same group key.
+        """
+        pipeline = [
+            {"$addFields": {
+                "_poi_key": {"$toLower": {"$toString": {"$ifNull": ["$poi_id", "$_id"]}}},
+                "_active_priority": {"$cond": [{"$in": ["$status", list(ACTIVE_STATUSES)]}, 1, 0]},
+            }},
+            {"$sort": {"_active_priority": -1, "created_at": -1, "_id": -1}},
+            {"$group": {"_id": "$_poi_key", "task": {"$first": "$$ROOT"}}},
+            {"$replaceRoot": {"newRoot": "$task"}},
+            {"$sort": {"_active_priority": -1, "created_at": -1, "_id": -1}},
+            {"$limit": limit},
+            {"$project": {"_poi_key": 0, "_active_priority": 0}},
+        ]
+        return [serialize(t) async for t in self.collection.aggregate(pipeline)]
 
     async def purge_finished(self, retention_days: int) -> int:
         """Dọn tác vụ đã kết thúc quá `retention_days` ngày (AUDIO_TASK_RETENTION_DAYS)."""
