@@ -1,3 +1,4 @@
+import useToastFeedback from '../hooks/useToastFeedback.js';
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axiosClient from '../../../api/axiosClient.js';
@@ -9,8 +10,8 @@ export default function ChangePasswordPage() {
   const [newPassword, setNewPassword] = useState('');
   const [confirm, setConfirm] = useState('');
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
-  const [message, setMessage] = useState('');
+  const [error, setError] = useToastFeedback('error');
+  const [message, setMessage] = useToastFeedback('success');
   const clearAuth = useAuthStore((s) => s.clearAuth);
   const navigate = useNavigate();
   async function submit(e) {

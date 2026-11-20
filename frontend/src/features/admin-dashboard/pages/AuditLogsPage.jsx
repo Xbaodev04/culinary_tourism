@@ -1,3 +1,4 @@
+import useToastFeedback from '../hooks/useToastFeedback.js';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import axiosClient from '../../../api/axiosClient.js';
 import { vietnamDateParts, vietnamLocalToUtcIso } from '../utils/vietnamTime.js';
@@ -160,7 +161,7 @@ export default function AuditLogsPage() {
   const [reload, setReload] = useState(0);
   const [data, setData] = useState({ items: [], total: 0 });
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
+  const [error, setError] = useToastFeedback('error');
   const [expanded, setExpanded] = useState(null);
   const [advanced, setAdvanced] = useState(false);
 

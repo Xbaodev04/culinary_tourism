@@ -501,8 +501,8 @@ async def test_tts_translates_new_poi_title_before_english_gate(client, manager,
     })
     assert en["title"] == "[en] Ốc Oanh"
     assert en["description"] == "[en] Ốc ngon mỗi ngày"
-    from app.modules.admin.poi_management import gate_for
-    assert (await gate_for(ObjectId(poi_id)))["ready"] is True
+    from app.modules.admin.poi_management import get_english_localization
+    assert (await get_english_localization(ObjectId(poi_id)))["audio_status"] == "completed"
 
 
 async def test_tts_does_not_overwrite_concurrent_admin_translation(client, manager, fake_tts):

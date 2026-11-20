@@ -4,6 +4,13 @@ Backend API cho hệ thống **Du lịch Ẩm thực Quận 4**, xây dựng b�
 
 ## 1. Tech Stack
 
+### Cloudinary và Render Free
+
+Backend hỗ trợ `MEDIA_STORAGE=local` (mặc định) hoặc `MEDIA_STORAGE=cloudinary`.
+Chế độ Cloudinary cần `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`,
+`CLOUDINARY_API_SECRET`; ảnh và MP3 được upload lên CDN, metadata/cache lưu trong
+MongoDB. Xem [hướng dẫn deploy và chuyển media cũ](../docs/deployment.md).
+
 | Công nghệ | Mục đích |
 |---|---|
 | Python 3.11 + FastAPI | REST API bất đồng bộ |
@@ -14,6 +21,22 @@ Backend API cho hệ thống **Du lịch Ẩm thực Quận 4**, xây dựng b�
 | Edge-TTS | Tổng hợp giọng nói |
 | Docker | Chạy MongoDB và Redis |
 | Pytest | Automated Testing |
+
+### Mobile visitor login
+
+- Google: set `GOOGLE_CLIENT_ID` in `backend/.env` to the Web OAuth client ID
+  used by Flutter's `GOOGLE_SERVER_CLIENT_ID`; restart/reload the Backend after
+  changing environment settings. Missing configuration returns `503` rather
+  than accepting tokens without audience validation.
+- Android OAuth must also match the APK package and signing certificate SHA-1.
+  The Mobile repository documents LAN/emulator/USB launch configurations in
+  `docs/mobile-login.md`.
+- Device login uses an installation ID. Multiple guest accounts are supported
+  by the partial unique email index `email_unique_present`. Startup builds this
+  index before removing the legacy `email_unique` index; user data is retained.
+- Guest usernames use the full deterministic account ID, avoiding collisions
+  when installation IDs share a prefix. Mobile profiles support UUID and ObjectId
+  account identifiers. Refresh JWTs are checked with `REFRESH_TOKEN_SECRET`.
 
 ## 2. Project Structure
 
@@ -33,6 +56,33 @@ backend/
 ```
 
 Backend sử dụng kiến trúc **Modular Monolith** với 10 router modules.
+
+### Hồ sơ đăng ký và công khai POI
+
+Form/API đăng ký chủ quán bắt buộc có `poi_description` (1–8000 ký tự sau khi
+loại khoảng trắng đầu/cuối), kể cả khi gửi kèm ảnh. Khi duyệt và tạo/gắn POI,
+Backend lưu nguyên mô tả này vào `poi.original_description` làm nguồn tạo audio,
+không ghép tên và địa chỉ để thay thế. Hồ sơ cũ chưa có mô tả cần Admin bổ sung
+trong màn hình duyệt; dữ liệu POI đang có không được tự viết lại hàng loạt.
+
+Admin có quyền `poi:toggle` tự bật/tắt `is_active`, không cần bản dịch hoặc MP3.
+Chỉnh sửa mô tả/bản dịch không tự ẩn POI; hàng chờ audio được cập nhật theo nguồn
+mới. API POI Master dùng `english_localization` để trả nội dung EN, thay cho
+`activation`. Bảng POI Master gồm quán ăn, QR, công khai và thao tác; dữ liệu
+phường/tọa độ vẫn được giữ để chỉnh sửa và sử dụng trên bản đồ.
+
+Khi Admin duyệt đề xuất chỉnh sửa POI, thay đổi thông tin ngoài thuyết minh không
+làm gián đoạn audio. Đổi tên giữ MP3 và cập nhật tiêu đề; đổi mô tả làm hàng chờ
+cập nhật theo nguồn mới cho đủ 5 ngôn ngữ (vi/en/zh/ja/ko). Nếu chưa có tác vụ
+đang xử lý, việc duyệt mô tả tự tạo tác vụ mới trong cùng transaction; supervisor
+sẽ nhận tác vụ ở chu kỳ tiếp theo. Tác vụ đang xử lý giữ ID, tác vụ tạm dừng vẫn
+tạm dừng và lịch sử đã hoàn tất/hủy được giữ nguyên.
+Chi tiết và cách kiểm thử: [POI edits and audio queue](../docs/audio-source-updates.md).
+
+Đăng ký chủ quán hỗ trợ `trigger_radius` (số nguyên 5–500 m, mặc định 30 m),
+được lưu vào POI khi duyệt hồ sơ. `GET /api/v1/admin/audio-tasks/eligible-pois`
+trả danh sách quán còn cần tạo audio, đã lọc trước khi phân trang. Chức năng
+tạo audio chỉ gửi `{ "poi_id": "..." }`; Backend mặc định tạo đủ 5 ngôn ngữ.
 
 ## 3. Getting Started
 
@@ -87,6 +137,13 @@ CORS_ORIGINS=http://localhost:5173
 ```
 
 Các biến JWT, Fernet và Super Admin phải được cấu hình riêng theo `.env.example`.
+Tạo khóa Fernet hợp lệ trong thư mục `backend/` bằng lệnh:
+
+```powershell
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+Sao chép giá trị vào `FERNET_KEY` trong `.env`. Khóa phải là khóa Fernet chuẩn (32 byte được mã hóa URL-safe Base64); không dùng chuỗi tùy ý hoặc placeholder.
 
 **Không commit `.env`, mật khẩu hoặc API keys lên Git.** Không thay `FERNET_KEY` khi còn dữ liệu CCCD đã mã hóa cần sử dụng.
 
@@ -110,7 +167,7 @@ Swagger UI cung cấp tài liệu API, request schema và response schema cho c�
 Mở terminal mới và di chuyển vào thư mục `frontend/` từ thư mục gốc dự án:
 
 ```powershell
-cd frontend
+
 ```
 
 Cài đặt dependencies (chỉ cần thực hiện lần đầu):
@@ -224,10 +281,34 @@ Sau khi MongoDB sẵn sàng, chạy seed lại theo mục 4.
 - **RBAC:** 32 permissions thuộc 9 domains.
 - **Audio:** Hỗ trợ tiếng Việt, Anh, Trung, Nhật và Hàn; có cache MP3.
 - **Translation:** Google Translate có thể giới hạn request (`429`); hệ thống hỗ trợ retry và bản dịch thủ công.
-- **Activation Gate:** POI cần bản dịch EN và Audio EN hợp lệ để công khai.
+- **Công khai POI:** Admin tự bật/tắt công khai; bản dịch và audio không phải điều kiện bắt buộc.
 - **Timezone:** Backend lưu UTC, frontend hiển thị `Asia/Ho_Chi_Minh`.
 - **Audit Logs:** Ghi nhận các thao tác quản trị nhạy cảm.
 - **Static Security:** Kiểm tra đường dẫn khi truy cập tài nguyên tĩnh.
+
+## 9. Sự kiện thống kê cho Dashboard chủ quán
+
+App du khách gửi tối đa 50 sự kiện mỗi lần đến `POST /api/v1/analytics/collect`
+với JSON dạng `{"consent_status":"granted","events":[...]}`. Chỉ gửi khi khách
+đã đồng ý chia sẻ thống kê. Mỗi sự kiện có `event_id` (UUID giữ nguyên khi gửi lại),
+`poi_id`, `kind` và `occurred_at` (ISO 8601 có múi giờ).
+
+| `kind` | Khi nào gửi |
+| --- | --- |
+| `poi_viewed` | Khách mở trang chi tiết quán. |
+| `search_poi_selected` | Khách chọn quán từ danh sách kết quả tìm kiếm. |
+| `audio_started` | Bản thuyết minh bắt đầu phát. |
+| `audio_completed` | Bản thuyết minh phát đến hết. |
+| `audio_ended` | Khách kết thúc lượt nghe trước khi bản thuyết minh phát đến hết. |
+
+Sự kiện audio cần `playback_id` (UUID mới cho mỗi lượt nghe, giữ nguyên từ lúc
+bắt đầu đến lúc kết thúc) và `language` (`vi`, `en`, `zh`, `ja`, `ko`). Gửi một
+trong hai sự kiện kết thúc với `duration_seconds` là số giây đã thực sự phát.
+Khi khách đổi bản ngôn ngữ, kết thúc lượt hiện tại và tạo lượt mới. Thời lượng
+được tính vào ngày kết thúc lượt nghe theo giờ Việt Nam.
+
+Backend tổng hợp tối đa 90 ngày lịch. Dashboard lấy số liệu của từng quán đã được
+liên kết với tài khoản qua `GET /api/v1/owner/analytics?poi_id=…&days=30`.
 
 ---
 

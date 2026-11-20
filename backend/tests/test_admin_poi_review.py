@@ -9,10 +9,36 @@ from bson import ObjectId
 
 from app.core import database
 from app.core.config import settings
+from app.core.security import hash_password
+from app.modules.owner import service as owner_service
 
 LOGIN = "/api/v1/admin/auth/login"
 POIS = "/api/v1/admin/pois"
 SUBS = "/api/v1/admin/submissions"
+
+
+async def test_owner_can_propose_cover_photo_without_updating_poi(client, monkeypatch, tmp_path):
+    db = database.get_db()
+    owner = (await db["users"].insert_one({
+        "email": "photo-owner@example.com", "password_hash": hash_password("TestOwner123!"),
+        "role": "poi_owner", "is_poi_owner_verified": True,
+    })).inserted_id
+    images = ["/static/images/old-cover.jpg", "/static/images/other.jpg"]
+    poi = (await db["poi"].insert_one({"owner_id": owner, "images": images})).inserted_id
+    assert (await client.post(LOGIN, json={
+        "email": "photo-owner@example.com", "password": "TestOwner123!",
+    })).status_code == 200
+    monkeypatch.setattr(owner_service, "IMAGE_DIR", tmp_path)
+
+    response = await client.post("/api/v1/owner/submissions/with-photo", data={
+        "payload": '{"poi_id":"' + str(poi) + '","proposed_changes":{}}',
+    }, files={"image": ("cover.png", b"\x89PNG\r\n\x1a\n" + b"sample", "image/png")})
+    assert response.status_code == 201, response.text
+    submission = await db["poi_submissions"].find_one({"_id": ObjectId(response.json()["id"])})
+    cover, other = submission["proposed_changes"]["images"]
+    assert other == images[1]
+    assert (tmp_path / "storefront" / cover.rsplit("/", 1)[1]).is_file()
+    assert (await db["poi"].find_one({"_id": poi}))["images"] == images
 
 
 async def login(client, admin_creds):
@@ -29,50 +55,36 @@ def sample_poi(name="Quán Kiểm Thử"):
 
 
 @pytest.mark.asyncio
-async def test_poi_crud_filters_auth_and_gate(client, admin_creds):
+async def test_poi_crud_filters_auth_and_manual_publication(client, admin_creds):
     assert (await client.get(POIS)).status_code == 401
     await login(client, admin_creds)
     created = await client.post(POIS, json=sample_poi())
     assert created.status_code == 201, created.text
     poi = created.json()
-    pid = poi["id"]
-    assert poi["is_active"] is False
-    assert not poi["activation"]["ready"]
-    assert len(poi["activation"]["reasons"]) == 3
-    assert (await client.post(POIS, json={**sample_poi(), "is_active": True})).status_code == 409
-    assert (await client.post(POIS, json={**sample_poi(), "location": {"type": "Point", "coordinates": [200, 10]}})).status_code == 422
-    assert (await client.post(POIS, json={**sample_poi(), "owner_id": "hacked"})).status_code == 422
-    listing = (await client.get(POIS, params={"q": "Kiểm Thử", "ward": "Phường 8", "is_active": False})).json()
-    assert listing["total"] == 1 and listing["items"][0]["id"] == pid
-    assert (await client.get(POIS, params={"ward": "Phường 15"})).json()["total"] == 0
-    assert (await client.patch(f"{POIS}/{pid}", json={"is_active": True, "expected_revision": 1})).status_code == 409
-
-    en = await client.put(f"{POIS}/{pid}/localizations/en", json={
-        "title": "Test Restaurant", "description": "Test restaurant cuisine", "expected_revision": 1,
+    pid = poi['id']
+    assert poi['is_active'] is False and 'activation' not in poi
+    assert poi['english_localization']['audio_url'] is None
+    published = await client.post(POIS, json={**sample_poi('Published'), 'is_active': True})
+    assert published.status_code == 201 and published.json()['is_active'] is True
+    assert (await client.post(POIS, json={**sample_poi(), 'location': {'type': 'Point', 'coordinates': [200, 10]}})).status_code == 422
+    assert (await client.post(POIS, json={**sample_poi(), 'owner_id': 'hacked'})).status_code == 422
+    assert (await client.get(POIS, params={'is_active': False})).json()['total'] == 1
+    changed = await client.patch(f'{POIS}/{pid}', json={'is_active': True, 'expected_revision': 1})
+    assert changed.status_code == 200 and changed.json()['is_active'] is True
+    assert (await client.patch(f'{POIS}/{pid}', json={'is_active': False, 'expected_revision': 1})).status_code == 409
+    en = await client.put(f'{POIS}/{pid}/localizations/en', json={
+        'title': 'Test Restaurant', 'description': 'Test cuisine', 'expected_revision': 2,
     })
-    assert en.status_code == 200, en.text
-    assert en.json()["activation"]["reasons"] == ["Chưa hoàn tất âm thanh tiếng Anh"]
-    db = database.get_db()
-    await db["poi_localizations"].update_one({"poi_id": ObjectId(pid), "lang": "en"}, {"$set": {
-        "audio_url": "/static/audio/demo.mp3", "audio_status": "completed",
-    }})
-    now = await client.get(f"{POIS}/{pid}")
-    assert now.json()["activation"]["ready"] is True
-    assert (await client.patch(f"{POIS}/{pid}", json={"is_active": True, "expected_revision": 1})).status_code == 409
-    changed = await client.patch(f"{POIS}/{pid}", json={"is_active": True, "expected_revision": 2})
-    assert changed.status_code == 200 and changed.json()["is_active"] is True
-    assert (await client.patch(f"{POIS}/{pid}", json={"original_description": "Nội dung khác"})).status_code == 409
-    off = await client.patch(f"{POIS}/{pid}", json={"is_active": False})
-    assert off.status_code == 200
-    revised = await client.patch(f"{POIS}/{pid}", json={"original_description": "Nội dung khác"})
-    assert revised.status_code == 200
-    assert revised.json()["activation"]["ready"] is False
-    en_doc = await db["poi_localizations"].find_one({"poi_id": ObjectId(pid), "lang": "en"})
-    assert en_doc["description"] is None and en_doc["audio_url"] is None
-    assert (await client.delete(f"{POIS}/{pid}")).status_code == 200
-    assert (await client.get(f"{POIS}/{pid}")).status_code == 404
-    assert (await db["poi_localizations"].count_documents({"poi_id": ObjectId(pid)})) == 0
-    assert (await db["system_meta"].find_one({"_id": "dataset"}))["version"] >= 5
+    assert en.status_code == 200 and en.json()['is_active'] is True
+    assert en.json()['english_localization']['description'] == 'Test cuisine'
+    revised = await client.patch(f'{POIS}/{pid}', json={'original_description': 'Updated narration'})
+    assert revised.status_code == 200 and revised.json()['is_active'] is True
+    en_doc = await database.get_db()['poi_localizations'].find_one({'poi_id': ObjectId(pid), 'lang': 'en'})
+    assert en_doc['description'] is None and en_doc['audio_url'] is None
+    assert (await client.patch(f'{POIS}/{pid}', json={'is_active': False})).status_code == 200
+    assert (await client.delete(f'{POIS}/{pid}')).status_code == 200
+    assert (await client.get(f'{POIS}/{pid}')).status_code == 404
+    assert await database.get_db()['poi_localizations'].count_documents({'poi_id': ObjectId(pid)}) == 0
 
 
 @pytest.mark.asyncio

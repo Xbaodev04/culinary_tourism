@@ -1,6 +1,6 @@
 """
-Service xử lý nghiệp vụ POI, Delta Sync, 3-Tier Content Fallback và Activation Gate.
-Phụ trách: Bảo (Public APIs) & Vũ (Admin CRUD / Activation Gate)
+Service xử lý nghiệp vụ POI, Delta Sync và 3-Tier Content Fallback.
+Phụ trách: Bảo (Public APIs) & Vũ (Admin CRUD / Công khai POI)
 """
 
 

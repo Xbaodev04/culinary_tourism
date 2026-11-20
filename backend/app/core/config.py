@@ -2,8 +2,12 @@
 Cấu hình hệ thống & Hằng số cốt lõi (Key Constants).
 Phụ trách: Vũ (Core Infra)
 """
+from pathlib import Path
+from typing import Literal
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite"
 
 class Settings(BaseSettings):
     # Runtime
@@ -21,6 +25,7 @@ class Settings(BaseSettings):
     REFRESH_TOKEN_SECRET: str = "dev_refresh_secret_change_in_prod"
     SECRET_KEY: str = "dev_secret_key"
     FERNET_KEY: str = ""
+    GOOGLE_CLIENT_ID: str = ""
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     JWT_ALGORITHM: str = "HS256"
@@ -29,6 +34,13 @@ class Settings(BaseSettings):
     COOKIE_SAMESITE: str = "lax"
     COOKIE_DOMAIN: str | None = None
     PII_RETENTION_DAYS: int = 180
+
+    # SMTP / Email Verification
+    SMTP_HOST: str = "smtp.gmail.com"
+    SMTP_PORT: int = 587
+    SMTP_USER: str = ""
+    SMTP_PASS: str = ""
+    FROM_EMAIL: str = ""
 
     # Bootstrap
     SUPERADMIN_BOOTSTRAP_MODE: str = "auto"
@@ -39,23 +51,40 @@ class Settings(BaseSettings):
     MAX_POI_IMAGES: int = 8
     MAX_IMAGE_SIZE_MB: int = 5
 
+    # Local development or durable media on Cloudinary (backend credentials only).
+    MEDIA_STORAGE: Literal["local", "cloudinary"] = "local"
+    CLOUDINARY_CLOUD_NAME: str = ""
+    CLOUDINARY_API_KEY: str = ""
+    CLOUDINARY_API_SECRET: str = ""
+    CLOUDINARY_FOLDER: str = "quan4"
+
     # Audio & TTS Constants
     VOICE_CATALOG_TTL_HOURS: int = 6
     MAX_CONCURRENT_TTS: int = 3
     AUDIO_TASK_HEARTBEAT_SECONDS: int = 5
     AUDIO_TASK_STALE_AFTER_MINUTES: int = 5
     AUDIO_TASK_RETENTION_DAYS: int = 14
+    GOOGLE_TRANSLATION_API_KEY: str = ""
 
     # Localization & AI Constants
     ON_DEMAND_RATE_LIMIT_PER_10MIN: int = 30
     HOTSET_MAX_POI_IDS: int = 10
     OWNER_DAILY_LIMIT: int = 10
     GEMINI_API_KEY: str = ""
-    GEMINI_MODEL: str = "gemini-2.5-flash"
+    GEMINI_MODEL: str = DEFAULT_GEMINI_MODEL
 
     # Static Paths
     STATIC_DIR: str = "app/static"
     MAP_PACK_DATA_DIR: str = "app/static/maps"
+    GOONG_API_KEY: str = ""
+    PHOTON_BASE_URL: str = "https://photon.komoot.io"
+
+    @property
+    def static_path(self) -> Path:
+        path = Path(self.STATIC_DIR)
+        if not path.is_absolute():
+            path = Path(__file__).resolve().parents[2] / path
+        return path
 
     @property
     def is_production(self) -> bool:

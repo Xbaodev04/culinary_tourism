@@ -1,3 +1,4 @@
+import useToastFeedback from '../hooks/useToastFeedback.js';
 import React, { useCallback, useEffect, useState } from 'react';
 import axiosClient from '../../../api/axiosClient.js';
 import { useAuthStore } from '../../../store/authStore.js';
@@ -17,8 +18,8 @@ export default function UsersManagementPage() {
   const [create, setCreate] = useState(null);
   const [editing, setEditing] = useState(null);
   const [password, setPassword] = useState('');
-  const [error, setError] = useState('');
-  const [notice, setNotice] = useState('');
+  const [error, setError] = useToastFeedback('error');
+  const [, setNotice] = useToastFeedback('success');
   const [busy, setBusy] = useState(false);
   const limit = 20;
   const canCreate = hasPermission(user, 'user:create');
@@ -50,7 +51,6 @@ export default function UsersManagementPage() {
   return <section className="space-y-4">
     <div><h1 className="text-xl font-bold">Quản lý tài khoản</h1><p className="text-sm text-slate-600">Chỉ hiển thị thông tin quản trị, không trả mật khẩu hoặc CCCD.</p></div>
     {error && <div role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-800">{error}</div>}
-    {notice && <div role="status" className="rounded-lg bg-green-50 p-3 text-sm text-green-800">{notice}</div>}
     <div className="flex flex-wrap gap-3">
       <input aria-label="Tìm tài khoản" className={textInput + ' max-w-sm'} value={search} onChange={(e) => { setSearch(e.target.value); setPage(0); }} placeholder="Tìm email hoặc họ tên" />
       <select aria-label="Lọc vai trò" className={textInput + ' max-w-xs'} value={filterRole} onChange={(e) => { setFilterRole(e.target.value); setPage(0); }}>

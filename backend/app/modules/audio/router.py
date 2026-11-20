@@ -2,7 +2,8 @@
 import logging
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
+from app.core.media_storage import cloudinary_audio
 from pydantic import BaseModel, Field
 
 from app.modules.audio.service import AUDIO_DIR, DEFAULT_NEURAL_VOICES, tts_service
@@ -30,11 +31,13 @@ async def tts(payload: TTSRequest):
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         # Never log the submitted narration text; it could contain private data.
-        logger.exception("Edge-TTS synthesis failed (language=%s)", payload.lang)
+        logger.exception("Audio generation/storage failed (language=%s)", payload.lang)
         raise HTTPException(
             status_code=502,
-            detail="Edge-TTS service failed. Check the Uvicorn traceback for the upstream error.",
+            detail="Không tạo hoặc lưu được âm thanh. Vui lòng thử lại sau.",
         ) from exc
+    if await cloudinary_audio(url):
+        return RedirectResponse(url, status_code=303, headers={"Cache-Control": "no-store"})
     return FileResponse(
         resolve_safe_path(AUDIO_DIR, url.rsplit("/", 1)[-1]), media_type="audio/mpeg",
         headers={"X-Content-Type-Options": "nosniff", "Content-Security-Policy": "sandbox; default-src 'none'"},

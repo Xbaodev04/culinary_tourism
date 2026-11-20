@@ -1,5 +1,5 @@
 from contextlib import asynccontextmanager
-from pathlib import Path
+import asyncio
 import logging
 
 from fastapi import FastAPI, Response, Request, status
@@ -9,12 +9,18 @@ from app.core.static_guard import GuardedStaticFiles
 
 from app.core.config import settings
 from app.core.database import close_db, connect_db, ping_db
+from app.core.ssl_support import ensure_ssl_certificates
+from app.core.media_storage import validate_media_config
 from app.modules.admin.service import admin_service
 from app.modules.audio.task_manager import audio_task_manager
+from app.modules.owner.service import purge_expired_registration_pii
 
-# Import 10 Router Lanes
+# Import 10 Router Lanes + Mobile Router & WebSocket
 from app.modules.content.router import router as content_router
 from app.modules.audio.router import router as audio_router
+from app.modules.mobile.router import router as mobile_router
+from app.modules.mobile.ws_router import router as ws_router
+
 from app.modules.admin.router import router as admin_router
 from app.modules.owner.router import router as owner_router
 from app.modules.ai_advisor.router import router as ai_advisor_router
@@ -26,6 +32,19 @@ from app.modules.runtime_observability.router import router as runtime_observabi
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
+logger = logging.getLogger("quan4.main")
+
+
+async def _owner_pii_retention_worker() -> None:
+    """Redact expired CCCD ciphertext at startup and once per day."""
+    while True:
+        try:
+            redacted = await purge_expired_registration_pii()
+            if redacted:
+                logger.info("Redacted expired owner identity records: %s", redacted)
+        except Exception:  # noqa: BLE001
+            logger.exception("Owner PII retention cleanup failed")
+        await asyncio.sleep(24 * 60 * 60)
 
 _INSECURE_DEFAULTS = {
     "dev_jwt_secret_change_in_prod",
@@ -81,14 +100,21 @@ async def lifespan(app: FastAPI):
     - Tầng 4: Recovery Audio Tasks & Background Workers (Sprint 3 — Task 3.8)
     """
     assert_security_config()
+    validate_media_config()
+    ensure_ssl_certificates()
     await connect_db()
     await admin_service.ensure_roles()
     await admin_service.ensure_super_admin()
     await audio_task_manager.recover()
     audio_task_manager.start_supervisor()  # Reclaim expired leases after a crash, not only at startup.
-    yield
-    await audio_task_manager.shutdown()
-    await close_db()
+    pii_retention_task = asyncio.create_task(_owner_pii_retention_worker())
+    try:
+        yield
+    finally:
+        pii_retention_task.cancel()
+        await asyncio.gather(pii_retention_task, return_exceptions=True)
+        await audio_task_manager.shutdown()
+        await close_db()
 
 
 _OPENAPI_TAGS = [
@@ -136,12 +162,13 @@ async def csrf_origin_guard(request: Request, call_next):
 
 
 # Mount thư mục tĩnh (/static/audio, /static/images, /static/maps)
-static_path = Path(__file__).resolve().parent / "static"
+static_path = settings.static_path
 static_path.mkdir(parents=True, exist_ok=True)
 app.mount("/static", GuardedStaticFiles(directory=str(static_path)), name="static")
 
-# Mount 10 Router Lanes dưới prefix /api/v1
+# Mount Router Lanes dưới prefix /api/v1
 API_PREFIX = "/api/v1"
+app.include_router(mobile_router, prefix=f"{API_PREFIX}/mobile")
 app.include_router(content_router, prefix=f"{API_PREFIX}/poi", tags=["1. Content (POI)"])
 app.include_router(audio_router, prefix=f"{API_PREFIX}/audio", tags=["2. Audio & TTS"])
 app.include_router(admin_router, prefix=f"{API_PREFIX}/admin", tags=["3. Admin & Auth"])
@@ -156,6 +183,11 @@ app.include_router(
     prefix=f"{API_PREFIX}/runtime",
     tags=["10. Runtime Observability"],
 )
+
+# WebSocket Online Heartbeat routes cho Mobile
+app.include_router(ws_router, prefix="/mobile")
+app.include_router(ws_router, prefix=f"{API_PREFIX}/mobile")
+app.include_router(ws_router)
 
 
 @app.get("/health", tags=["Health"])

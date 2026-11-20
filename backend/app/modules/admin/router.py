@@ -1,9 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse, RedirectResponse
+from app.core.media_storage import CloudinaryAsset
+from pydantic import BaseModel, Field, ValidationError
+from starlette.datastructures import UploadFile
 from typing import Literal
 
-from app.modules.admin.registrations import list_registrations, reveal_cccd, review_registration
+from app.modules.admin.registrations import list_registrations, reveal_cccd, review_registration, search_registration_pois
 from app.modules.admin.poi_management import (list_pois, create_poi as create_master_poi,
                                                get_poi as get_master_poi, update_poi as update_master_poi,
                                                delete_poi as delete_master_poi, save_english as save_poi_english)
@@ -38,7 +40,7 @@ from app.modules.admin.schemas import (
     LoginRequest,
     LoginResponse,
     MessageResponse,
-    OwnerRegisterRequest,
+    RegistrationReviewRequest,
     RefreshRequest,
     ReviewDecisionRequest,
     POICreateRequest,
@@ -47,7 +49,10 @@ from app.modules.admin.schemas import (
     UserMe, ChangePasswordRequest, UserCreateRequest, UserUpdateRequest,
     ResetPasswordRequest, RoleCreateRequest, RoleUpdateRequest,
 )
+from app.modules.owner.schemas import OwnerRegisterRequest
+from app.modules.owner.service import MENU_IMAGE_MAX_BYTES, create_owner_registration
 from app.modules.admin.service import admin_service
+from app.modules.admin.operations_dashboard import get_operations_dashboard
 from app.modules.admin.audit import list_audit_events, fingerprint_login, write_audit_event
 from datetime import datetime
 
@@ -184,13 +189,42 @@ async def change_password(payload: ChangePasswordRequest, request: Request, resp
     return {"message": "Đổi mật khẩu thành công. Vui lòng đăng nhập lại."}
 
 
-@router.post("/auth/register-owner")
-async def register_owner(payload: OwnerRegisterRequest):
-    return {"status": "todo", "endpoint": "POST /api/v1/admin/auth/register-owner"}
+@router.post("/auth/register-owner", status_code=status.HTTP_201_CREATED)
+async def register_owner(payload: OwnerRegisterRequest, request: Request):
+    """Public owner onboarding; the account remains unverified until Admin review."""
+    return await create_owner_registration(payload, _client_ip(request))
+
+
+@router.post("/auth/register-owner/upload", status_code=status.HTTP_201_CREATED)
+async def register_owner_with_image(request: Request):
+    """Submit a registration and one local storefront photo together."""
+    ip = _client_ip(request)
+    if not await login_attempt_allowed("owner-registration-photo", ip):
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Vui lòng thử gửi lại hồ sơ sau ít phút")
+    async with request.form(max_files=1, max_fields=1) as form:
+        raw_payload = form.get("payload")
+        photo = form.get("image")
+        if not isinstance(raw_payload, str) or not isinstance(photo, UploadFile):
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Cần thông tin hồ sơ và ảnh mặt tiền")
+        if len(raw_payload) > 16 * 1024:
+            raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "Thông tin hồ sơ quá dài")
+        try:
+            payload = OwnerRegisterRequest.model_validate_json(raw_payload)
+        except ValidationError as exc:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                exc.errors(include_url=False, include_input=False, include_context=False),
+            ) from exc
+        content = await photo.read(MENU_IMAGE_MAX_BYTES + 1)
+        if not content:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Ảnh mặt tiền trống")
+        if len(content) > MENU_IMAGE_MAX_BYTES:
+            raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "Ảnh vượt quá 5 MB")
+    return await create_owner_registration(payload, ip, storefront_image=content)
 
 
 # ==========================================
-# 2. POI Management & Activation Gate
+# 2. POI Management & Publication
 # ==========================================
 @router.get("/pois")
 async def list_admin_pois(
@@ -207,6 +241,8 @@ async def list_admin_pois(
 @router.post("/pois", status_code=201)
 async def create_poi(payload: POICreateRequest, request: Request,
                      user: dict = Depends(require_permission("poi:create"))):
+    if payload.is_active and "poi:toggle" not in user["permissions"]:
+        raise HTTPException(403, "Thiếu quyền poi:toggle")
     return await create_master_poi(payload, user, _client_ip(request))
 
 
@@ -223,13 +259,10 @@ async def get_admin_poi_audios(
 async def play_admin_poi_audio(
     poi_id: str, lang: str, _: dict = Depends(require_permission("poi:read")),
 ):
-    """Stream an existing verified MP3 inline in the Admin player.
-
-    Unlike the public /static link, the media URL is derived from the current
-    localization and validated on disk. Browsers can seek through FileResponse
-    (Range support in Starlette) and do not navigate to a new page.
-    """
+    """Authorize access, then serve a trusted local MP3 or redirect to its CDN URL."""
     file = await get_poi_audio_file(poi_id, lang)
+    if isinstance(file, CloudinaryAsset):
+        return RedirectResponse(file.url, status_code=307, headers={"Cache-Control": "no-store"})
     return FileResponse(
         file, media_type="audio/mpeg", filename=f"quan4_{poi_id}_{lang}.mp3",
         content_disposition_type="inline",
@@ -243,6 +276,11 @@ async def download_admin_poi_audio(
 ):
     """Force download of a validated audio file, not a user-supplied path."""
     file = await get_poi_audio_file(poi_id, lang)
+    if isinstance(file, CloudinaryAsset):
+        return RedirectResponse(
+            file.download_url(f"quan4_{poi_id}_{lang}"), status_code=307,
+            headers={"Cache-Control": "no-store"},
+        )
     return FileResponse(
         file, media_type="audio/mpeg", filename=f"quan4_{poi_id}_{lang}.mp3",
         content_disposition_type="attachment", headers={
@@ -260,7 +298,7 @@ async def get_admin_poi(poi_id: str, _: dict = Depends(require_permission("poi:r
 @router.patch("/pois/{poi_id}")
 async def update_admin_poi(poi_id: str, payload: POIUpdateRequest, request: Request,
                            user: dict = Depends(require_permission("poi:update"))):
-    # Activation requires poi:toggle permission as well as poi:update.
+    # Publication is an explicit Admin decision protected by poi:toggle.
     if payload.is_active is not None and "poi:toggle" not in user["permissions"]:
         raise HTTPException(403, "Thiếu quyền poi:toggle")
     return await update_master_poi(poi_id, payload, user, _client_ip(request))
@@ -287,10 +325,12 @@ async def list_owner_registrations(
     q: str | None = Query(None, max_length=100, description="Tìm theo tên chủ quán / tên quán / SĐT / email"),
     limit: int = Query(100, ge=1, le=200),
     skip: int = Query(0, ge=0),
+    sort_by: Literal["poi_name", "full_name", "status", "created_at"] = "created_at",
+    order: Literal["asc", "desc"] = "desc",
     _: dict = Depends(require_permission("user:read")),
 ):
     """Danh sách hồ sơ đăng ký (không chứa CCCD) + số lượng theo trạng thái."""
-    return await list_registrations(status_filter, q, limit, skip)
+    return await list_registrations(status_filter, q, limit, skip, sort_by=sort_by, order=order)
 
 
 @router.get("/registrations/{reg_id}/cccd")
@@ -305,15 +345,29 @@ async def show_owner_cccd(
     return await reveal_cccd(reg_id, user, _client_ip(request))
 
 
+@router.get("/registrations/{reg_id}/poi-candidates")
+async def find_registration_pois(
+    reg_id: str,
+    name: str = Query("", max_length=180),
+    address: str = Query("", max_length=400),
+    _: dict = Depends(require_permission("user:update")),
+    __: dict = Depends(require_permission("poi:read")),
+):
+    return await search_registration_pois(reg_id, name, address)
+
+
 @router.post("/registrations/{reg_id}/review")
 async def review_owner_registration(
     reg_id: str,
-    decision: ReviewDecisionRequest,
+    decision: RegistrationReviewRequest,
     request: Request,
     user: dict = Depends(require_permission("user:update")),
 ):
-    """Phê duyệt (bật `is_poi_owner_verified`) hoặc Từ chối (bắt buộc `admin_note`)."""
-    return await review_registration(reg_id, decision.action, decision.admin_note, user, _client_ip(request))
+    """Duyệt và gắn quán, bổ sung liên kết cho hồ sơ cũ hoặc từ chối hồ sơ."""
+    return await review_registration(
+        reg_id, decision.action, decision.admin_note, user, _client_ip(request), decision.poi_id, decision.draft,
+        poi_location=decision.poi_location, poi_description=decision.poi_description,
+    )
 
 
 @router.get("/submissions")
@@ -322,9 +376,11 @@ async def list_poi_submissions(
     q: str | None = Query(None, max_length=100),
     limit: int = Query(100, ge=1, le=200),
     skip: int = Query(0, ge=0),
+    sort_by: Literal["poi_name", "status", "created_at"] = "created_at",
+    order: Literal["asc", "desc"] = "desc",
     _: dict = Depends(require_permission("poi:read")),
 ):
-    return await list_submissions(status_filter, q, limit, skip)
+    return await list_submissions(status_filter, q, limit, skip, sort_by=sort_by, order=order)
 
 
 @router.post("/submissions/{sub_id}/review")
@@ -339,6 +395,21 @@ async def review_poi_submission(
 
 
 # ==========================================
+# Dashboard Analytics (Admin)
+# ==========================================
+@router.get("/dashboard/stats", summary="Thống kê tổng quan dành cho Admin")
+async def admin_dashboard_stats(
+    days: int = Query(30, description="Số ngày thống kê: 7, 30 hoặc 90"),
+    _: dict = Depends(require_permission("analytics:view")),
+):
+    # Query parameters are text in HTTP requests. Pydantic v2 does not coerce
+    # "30" into Literal[30], so use int and validate allowed periods explicitly.
+    if days not in (7, 30, 90):
+        raise HTTPException(status_code=422, detail="days must be 7, 30 or 90")
+    return await get_operations_dashboard(days)
+
+
+# ==========================================
 # 4. Audio Tasks & SSE Stream (Task 3.8, 3.9)
 # ==========================================
 class AudioTaskCreateRequest(BaseModel):
@@ -346,9 +417,25 @@ class AudioTaskCreateRequest(BaseModel):
     languages: list[Literal["vi", "en", "zh", "ja", "ko"]] | None = Field(default=None, min_length=1)
 
 
+@router.get("/dashboard/online-visitors")
+async def online_visitors(_: dict = Depends(require_permission("analytics:view"))):
+    from app.modules.mobile.presence import online_snapshot
+    return await online_snapshot()
+
+
 @router.get("/audio-tasks")
 async def list_audio_tasks(_: dict = Depends(require_permission("poi:update"))):
     return {"items": await audio_task_store.list()}
+
+
+@router.get("/audio-tasks/eligible-pois")
+async def audio_creation_candidates(
+    q: str | None = Query(None, max_length=100),
+    limit: int = Query(30, ge=1, le=200), skip: int = Query(0, ge=0),
+    _: dict = Depends(require_permission("poi:update")),
+):
+    from app.modules.audio.eligibility import list_audio_candidates
+    return await list_audio_candidates(q, limit, skip)
 
 
 @router.get("/audio-tasks/stream")
@@ -365,7 +452,14 @@ async def stream_audio_tasks(request: Request, _: dict = Depends(require_permiss
 async def create_audio_task(
     payload: AudioTaskCreateRequest, request: Request, user: dict = Depends(require_permission("poi:update"))
 ):
-    """Xếp hàng sinh audio (dịch + TTS) cho một quán. Body: {"poi_id": "...", "languages": ["en", ...]}."""
+    """Body {poi_id}: mặc định tạo vi/en/zh/ja/ko. languages hỗ trợ client cũ."""
+    if payload.languages is None:
+        from bson import ObjectId
+        from app.core.database import get_db
+        from app.modules.audio.eligibility import poi_has_complete_audio
+        poi = await get_db()["poi"].find_one({"_id": ObjectId(payload.poi_id)}) if ObjectId.is_valid(payload.poi_id) else None
+        if poi and await poi_has_complete_audio(poi):
+            raise HTTPException(409, "Quán đã có đủ audio cho 5 ngôn ngữ. Hãy làm mới danh sách quán.")
     try:
         task_id = await audio_task_manager.enqueue_poi_audio_task(
             payload.poi_id, payload.languages, actor_id=user["id"], actor_ip=_client_ip(request),

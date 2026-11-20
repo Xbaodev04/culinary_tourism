@@ -12,7 +12,7 @@ from pydantic import ValidationError
 
 from app.core.database import get_db, mongo_transaction
 from app.modules.admin.poi_management import (
-    bump_dataset, gate_for, now, oid, revision_query, serialize_poi, invalidate_narrations,
+    bump_dataset, now, oid, revision_query, invalidate_narrations,
 )
 from app.modules.admin.schemas import POIUpdateRequest
 
@@ -56,7 +56,8 @@ def serialize_submission(doc, poi):
     }
 
 
-async def list_submissions(status=None, q=None, limit=100, skip=0):
+async def list_submissions(status=None, q=None, limit=100, skip=0, *,
+                           sort_by="created_at", order="desc"):
     """Filter at MongoDB BEFORE pagination, avoiding loading all submissions into RAM.
 
     POI IDs historically appear as either ObjectId or string in submissions.
@@ -75,9 +76,27 @@ async def list_submissions(status=None, q=None, limit=100, skip=0):
             matching_pois.append(ObjectId(needle))
         poi_ids = list(set(matching_pois))
         query["poi_id"] = {"$in": poi_ids + [str(pid) for pid in poi_ids]}
-    total = await db["poi_submissions"].count_documents(query)
-    docs = [d async for d in db["poi_submissions"].find(query)
-            .sort("created_at", -1).skip(skip).limit(limit)]
+    collection = db["poi_submissions"]
+    total = await collection.count_documents(query)
+    direction = 1 if order == "asc" else -1
+    if sort_by == "poi_name":
+        cursor = collection.aggregate([
+            {"$match": query},
+            {"$set": {"_sort_poi_id": {"$convert": {
+                "input": "$poi_id", "to": "objectId", "onError": None, "onNull": None,
+            }}}},
+            {"$lookup": {"from": "poi", "localField": "_sort_poi_id", "foreignField": "_id", "as": "_sort_poi"}},
+            {"$set": {"_sort_name": {"$ifNull": [
+                {"$arrayElemAt": ["$_sort_poi.name", 0]}, "(POI không còn tồn tại)",
+            ]}}},
+            {"$sort": {"_sort_name": direction, "_id": direction}},
+            {"$skip": skip},
+            {"$limit": limit},
+            {"$unset": ["_sort_poi", "_sort_poi_id", "_sort_name"]},
+        ])
+    else:
+        cursor = collection.find(query).sort([(sort_by, direction), ("_id", direction)]).skip(skip).limit(limit)
+    docs = [doc async for doc in cursor]
     ids = [ObjectId(str(d["poi_id"])) for d in docs
            if ObjectId.is_valid(str(d.get("poi_id", "")))]
     pois = [p async for p in db["poi"].find({"_id": {"$in": ids}})] if ids else []
@@ -102,6 +121,7 @@ async def review_submission(sub_id, action, note, expected_revision, user, ip):
     db = get_db()
     sid = oid(sub_id, "submission")
     version = None
+    audio_task_id = None
     data = {}
     final_status = "approved" if action == "approve" else "rejected"
     async with mongo_transaction() as tx:
@@ -123,17 +143,18 @@ async def review_submission(sub_id, action, note, expected_revision, user, ip):
                 raise HTTPException(409, "POI đã đổi hoặc chưa xác nhận phiên bản; hãy tải lại Diff View")
             desc_changed = "original_description" in data and data["original_description"] != poi.get("original_description")
             name_changed = "name" in data and data["name"] != poi.get("name")
-            if (desc_changed or name_changed) and poi.get("is_active"):
-                raise HTTPException(409, "Phải tắt công khai quán trước khi duyệt thay đổi mô tả")
             updated = await db["poi"].update_one({"_id": pid, **revision_query(poi)},
                 {"$set": {**data, "updated_at": now()}, "$inc": {"revision": 1}}, session=tx)
             if not updated.modified_count:
                 raise HTTPException(409, "POI vừa thay đổi; tải lại Diff View")
             if desc_changed or name_changed:
-                await invalidate_narrations(
+                audio_task_id = await invalidate_narrations(
                     db, pid, data.get("name", poi.get("name", "")),
                     data.get("original_description", poi.get("original_description", "")),
                     name_changed=name_changed, desc_changed=desc_changed, session=tx,
+                    previous_name=poi.get("name", ""),
+                    previous_description=poi.get("original_description") or poi.get("description") or "",
+                    ensure_audio=desc_changed,
                 )
             version = await bump_dataset(session=tx)
         claim = await db["poi_submissions"].update_one({"_id": sid, "status": "pending"},
@@ -152,6 +173,13 @@ async def review_submission(sub_id, action, note, expected_revision, user, ip):
             }, session=tx)
         await write_audit_event(user["id"], f"poi.submission_{action}",
             f"submission:{sid}", ip,
-            {"poi_id": str(submission.get("poi_id")), "fields": list(data), "dataset_version": version}, session=tx)
+            {"poi_id": str(submission.get("poi_id")), "fields": list(data), "dataset_version": version,
+             "audio_task_id": audio_task_id}, session=tx)
+    if action == "approve":
+        from app.modules.audio.task_store import audio_task_store
+        audio_task_store._notify()
+        # The supervisor claims persisted queued jobs on its next cycle. Keeping
+        # dispatch out of this request also survives an API process restart.
     return {"id": str(sid), "status": final_status,
-            "poi_id": str(submission.get("poi_id")), "dataset_version": version}
+            "poi_id": str(submission.get("poi_id")), "dataset_version": version,
+            "audio_task_id": audio_task_id}
