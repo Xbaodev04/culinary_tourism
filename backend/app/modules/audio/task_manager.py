@@ -8,6 +8,7 @@ from bson import ObjectId
 from fastapi import HTTPException
 
 from app.core.config import settings
+from app.core.media_storage import cloudinary_audio
 from app.core.database import get_db, mongo_transaction
 from app.modules.admin.audit import write_audit_event
 from app.modules.audio.service import (
@@ -390,7 +391,9 @@ class AudioTaskManager:
         result = None
         if description_valid and existing.get("audio_status") == "completed" and existing.get("audio_url"):
             url = existing["audio_url"]
-            if url.startswith("/static/audio/"):
+            if await cloudinary_audio(url):
+                result = SynthResult(url, True)
+            elif settings.MEDIA_STORAGE == "local" and url.startswith("/static/audio/"):
                 try:
                     file = resolve_safe_path(speech_module.AUDIO_DIR, url.removeprefix("/static/audio/"))
                     if file.suffix == ".mp3" and file.is_file() and file.stat().st_size > 0:

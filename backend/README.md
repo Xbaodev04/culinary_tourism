@@ -4,6 +4,13 @@ Backend API cho hệ thống **Du lịch Ẩm thực Quận 4**, xây dựng b�
 
 ## 1. Tech Stack
 
+### Cloudinary và Render Free
+
+Backend hỗ trợ `MEDIA_STORAGE=local` (mặc định) hoặc `MEDIA_STORAGE=cloudinary`.
+Chế độ Cloudinary cần `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`,
+`CLOUDINARY_API_SECRET`; ảnh và MP3 được upload lên CDN, metadata/cache lưu trong
+MongoDB. Xem [hướng dẫn deploy và chuyển media cũ](../docs/deployment.md).
+
 | Công nghệ | Mục đích |
 |---|---|
 | Python 3.11 + FastAPI | REST API bất đồng bộ |

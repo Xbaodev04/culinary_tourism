@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse, RedirectResponse
+from app.core.media_storage import CloudinaryAsset
 from pydantic import BaseModel, Field, ValidationError
 from starlette.datastructures import UploadFile
 from typing import Literal
@@ -258,13 +259,10 @@ async def get_admin_poi_audios(
 async def play_admin_poi_audio(
     poi_id: str, lang: str, _: dict = Depends(require_permission("poi:read")),
 ):
-    """Stream an existing verified MP3 inline in the Admin player.
-
-    Unlike the public /static link, the media URL is derived from the current
-    localization and validated on disk. Browsers can seek through FileResponse
-    (Range support in Starlette) and do not navigate to a new page.
-    """
+    """Authorize access, then serve a trusted local MP3 or redirect to its CDN URL."""
     file = await get_poi_audio_file(poi_id, lang)
+    if isinstance(file, CloudinaryAsset):
+        return RedirectResponse(file.url, status_code=307, headers={"Cache-Control": "no-store"})
     return FileResponse(
         file, media_type="audio/mpeg", filename=f"quan4_{poi_id}_{lang}.mp3",
         content_disposition_type="inline",
@@ -278,6 +276,11 @@ async def download_admin_poi_audio(
 ):
     """Force download of a validated audio file, not a user-supplied path."""
     file = await get_poi_audio_file(poi_id, lang)
+    if isinstance(file, CloudinaryAsset):
+        return RedirectResponse(
+            file.download_url(f"quan4_{poi_id}_{lang}"), status_code=307,
+            headers={"Cache-Control": "no-store"},
+        )
     return FileResponse(
         file, media_type="audio/mpeg", filename=f"quan4_{poi_id}_{lang}.mp3",
         content_disposition_type="attachment", headers={

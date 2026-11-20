@@ -4,6 +4,12 @@
 
 ---
 
+## Deploy lên Render và Vercel
+
+Xem [hướng dẫn deploy](docs/deployment.md): FastAPI trên Render, React trên Vercel,
+MongoDB Atlas và Cloudinary cho ảnh/audio. Backend dùng Render Free; cấu hình có sẵn tại `render.yaml`
+và `frontend/vercel.json`.
+
 ## 1. Cấu trúc Thư mục Dự án (Monorepo Skeleton)
 
 ```text

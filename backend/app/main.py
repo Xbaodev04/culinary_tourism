@@ -1,6 +1,5 @@
 from contextlib import asynccontextmanager
 import asyncio
-from pathlib import Path
 import logging
 
 from fastapi import FastAPI, Response, Request, status
@@ -11,6 +10,7 @@ from app.core.static_guard import GuardedStaticFiles
 from app.core.config import settings
 from app.core.database import close_db, connect_db, ping_db
 from app.core.ssl_support import ensure_ssl_certificates
+from app.core.media_storage import validate_media_config
 from app.modules.admin.service import admin_service
 from app.modules.audio.task_manager import audio_task_manager
 from app.modules.owner.service import purge_expired_registration_pii
@@ -100,6 +100,7 @@ async def lifespan(app: FastAPI):
     - Tầng 4: Recovery Audio Tasks & Background Workers (Sprint 3 — Task 3.8)
     """
     assert_security_config()
+    validate_media_config()
     ensure_ssl_certificates()
     await connect_db()
     await admin_service.ensure_roles()
@@ -161,7 +162,7 @@ async def csrf_origin_guard(request: Request, call_next):
 
 
 # Mount thư mục tĩnh (/static/audio, /static/images, /static/maps)
-static_path = Path(__file__).resolve().parent / "static"
+static_path = settings.static_path
 static_path.mkdir(parents=True, exist_ok=True)
 app.mount("/static", GuardedStaticFiles(directory=str(static_path)), name="static")
 

@@ -6,9 +6,11 @@ import re
 from uuid import uuid4
 from dataclasses import dataclass
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from weakref import WeakValueDictionary
 
 from app.core import database
+from app.core import media_storage
 from app.core.config import settings
 from app.core.ssl_support import ensure_ssl_certificates
 
@@ -30,7 +32,7 @@ BACKUP_NEURAL_VOICES = {
     "ko": ["ko-KR-SunHiNeural", "ko-KR-InJoonNeural"],
 }
 
-AUDIO_DIR = Path(__file__).resolve().parents[2] / "static" / "audio"
+AUDIO_DIR = settings.static_path / "audio"
 
 # Mã ngôn ngữ của Google Translate khác mã nội bộ ở tiếng Trung.
 TRANSLATE_CODES = {"zh": "zh-CN"}
@@ -384,7 +386,7 @@ class TTSService:
     # Tổng hợp giọng nói
     # ------------------------------------------------------------------
     async def synthesize(self, text: str, lang: str = "vi") -> SynthResult:
-        """Sinh MP3 (hoặc dùng lại tệp đã có). Trả về URL tĩnh + cờ `cache_hit`."""
+        """Sinh/lưu MP3 hoặc dùng cache; trả URL local/Cloudinary và `cache_hit`."""
         self._check_lang(lang)
         if not text or not text.strip() or len(text) > MAX_TEXT_LENGTH:
             raise ValueError("Invalid language/text")
@@ -395,6 +397,19 @@ class TTSService:
 
         lock = self._locks.setdefault(digest, asyncio.Lock())
         async with lock:
+            if settings.MEDIA_STORAGE == "cloudinary":
+                cached = await media_storage.cached_asset("video", media_storage.audio_public_id(digest))
+                if cached:
+                    return SynthResult(cached.url, True)
+                # Existing local audio can be promoted without another TTS call.
+                if file.is_file() and file.stat().st_size > 0:
+                    asset = await media_storage.upload_audio(file, digest)
+                    return SynthResult(asset.url, True)
+                with TemporaryDirectory(prefix=f".{digest}.", dir=AUDIO_DIR) as temporary:
+                    generated = Path(temporary) / file.name
+                    await self._generate(text, lang, generated)
+                    asset = await media_storage.upload_audio(generated, digest)
+                    return SynthResult(asset.url, False)
             if file.is_file() and file.stat().st_size > 0:
                 logger.info("TTS cache HIT %s (%s) — zero cost", file.name, lang)
                 return SynthResult(url, True)

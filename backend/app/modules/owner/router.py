@@ -3,7 +3,6 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
 from pydantic import ValidationError
-from starlette.concurrency import run_in_threadpool
 
 from app.core.rbac import require_permission
 from app.core.security import get_current_user
@@ -119,7 +118,7 @@ async def upload_menu_image(
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Bạn không có quyền tải ảnh món ăn")
     await service.authorize_menu_image_upload(poi_id, user, menu_item_id)
     content = await image.read(service.MENU_IMAGE_MAX_BYTES + 1)
-    return {"image_url": await run_in_threadpool(service.store_menu_image, content)}
+    return {"image_url": await service.store_menu_image(content)}
 
 
 @router.post("/menu-items", status_code=status.HTTP_201_CREATED)

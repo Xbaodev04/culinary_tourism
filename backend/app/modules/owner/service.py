@@ -12,6 +12,7 @@ from fastapi import HTTPException, status
 from pymongo.errors import DuplicateKeyError
 
 from app.core.config import settings
+from app.core import media_storage
 from app.core.database import get_db, mongo_transaction
 from app.core.security import encrypt_pii, hash_password
 from app.modules.admin.audit import write_audit_event
@@ -114,7 +115,7 @@ async def create_owner_registration(
     password_hash = await asyncio.to_thread(hash_password, payload.password)
     storefront_image_url = payload.storefront_image_url
     if storefront_image is not None:
-        storefront_image_url = await asyncio.to_thread(_store_image, storefront_image, "storefront")
+        storefront_image_url = await _store_image(storefront_image, "storefront")
     stamp = now()
     registration_id = None
     try:
@@ -221,7 +222,7 @@ async def list_my_menu_items(poi_id: str, user: dict) -> dict:
 
 
 MENU_IMAGE_MAX_BYTES = 5 * 1024 * 1024
-IMAGE_DIR = Path(__file__).resolve().parents[2] / "static" / "images"
+IMAGE_DIR = settings.static_path / "images"
 
 
 async def authorize_menu_image_upload(poi_id: str, user: dict, menu_item_id: str | None):
@@ -233,11 +234,11 @@ async def authorize_menu_image_upload(poi_id: str, user: dict, menu_item_id: str
         await _owned_poi(poi_id, user)
 
 
-def store_menu_image(content: bytes) -> str:
-    return _store_image(content, "menu")
+async def store_menu_image(content: bytes) -> str:
+    return await _store_image(content, "menu")
 
 
-def _store_image(content: bytes, folder: str) -> str:
+async def _store_image(content: bytes, folder: str) -> str:
     if len(content) > MENU_IMAGE_MAX_BYTES:
         raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "Ảnh vượt quá 5 MB")
     if content.startswith(b"\xff\xd8\xff"):
@@ -248,6 +249,16 @@ def _store_image(content: bytes, folder: str) -> str:
         extension = "webp"
     else:
         raise HTTPException(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, "Chỉ hỗ trợ ảnh JPEG, PNG và WebP")
+    if settings.MEDIA_STORAGE == "cloudinary":
+        try:
+            asset = await media_storage.upload_image(content, folder, sha256(content).hexdigest())
+        except media_storage.MediaStorageError:
+            raise HTTPException(502, "Không tải được ảnh lên Cloudinary. Vui lòng thử lại.") from None
+        return asset.url
+    return await asyncio.to_thread(_store_local_image, content, folder, extension)
+
+
+def _store_local_image(content: bytes, folder: str, extension: str) -> str:
     filename = f"{sha256(content).hexdigest()}.{extension}"
     directory = IMAGE_DIR / folder
     directory.mkdir(parents=True, exist_ok=True)
@@ -343,7 +354,7 @@ async def create_poi_submission(
     if cover_photo is not None:
         if "images" in changes:
             raise HTTPException(422, "Chỉ gửi ảnh mặt tiền qua tệp đã chọn")
-        image_url = await asyncio.to_thread(_store_image, cover_photo, "storefront")
+        image_url = await _store_image(cover_photo, "storefront")
         changes["images"] = [image_url, *(poi.get("images") or [])[1:20]]
     if not changes:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Đề xuất phải có giá trị hợp lệ")

@@ -2,6 +2,9 @@
 Cấu hình hệ thống & Hằng số cốt lõi (Key Constants).
 Phụ trách: Vũ (Core Infra)
 """
+from pathlib import Path
+from typing import Literal
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite"
@@ -48,6 +51,13 @@ class Settings(BaseSettings):
     MAX_POI_IMAGES: int = 8
     MAX_IMAGE_SIZE_MB: int = 5
 
+    # Local development or durable media on Cloudinary (backend credentials only).
+    MEDIA_STORAGE: Literal["local", "cloudinary"] = "local"
+    CLOUDINARY_CLOUD_NAME: str = ""
+    CLOUDINARY_API_KEY: str = ""
+    CLOUDINARY_API_SECRET: str = ""
+    CLOUDINARY_FOLDER: str = "quan4"
+
     # Audio & TTS Constants
     VOICE_CATALOG_TTL_HOURS: int = 6
     MAX_CONCURRENT_TTS: int = 3
@@ -68,6 +78,13 @@ class Settings(BaseSettings):
     MAP_PACK_DATA_DIR: str = "app/static/maps"
     GOONG_API_KEY: str = ""
     PHOTON_BASE_URL: str = "https://photon.komoot.io"
+
+    @property
+    def static_path(self) -> Path:
+        path = Path(self.STATIC_DIR)
+        if not path.is_absolute():
+            path = Path(__file__).resolve().parents[2] / path
+        return path
 
     @property
     def is_production(self) -> bool:
