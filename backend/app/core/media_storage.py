@@ -7,6 +7,7 @@ import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from io import BytesIO
+import logging
 from pathlib import Path
 import re
 from urllib.parse import urlsplit
@@ -14,9 +15,42 @@ from urllib.parse import urlsplit
 from app.core.config import settings
 from app.core.database import get_db
 
+logger = logging.getLogger("quan4.media")
 
 class MediaStorageError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, code: str = "upload_failed"):
+        super().__init__(message)
+        self.code = code
+
+
+def _upload_error(error: Exception) -> MediaStorageError:
+    """Translate provider errors to fixed messages; never expose request parameters."""
+    from cloudinary.exceptions import AuthorizationRequired, BadRequest, NotAllowed, RateLimited
+
+    message = str(error).lower()
+    if "disabled" in message or "suspended" in message:
+        code, detail = "account_disabled", "Tài khoản Cloudinary đang bị vô hiệu hóa hoặc tạm ngưng."
+    elif isinstance(error, AuthorizationRequired) or any(
+        marker in message for marker in ("invalid api_key", "unknown api_key", "invalid signature", "api_secret mismatch")
+    ):
+        code, detail = "authentication_failed", "Dịch vụ lưu media chưa xác thực được. Vui lòng liên hệ quản trị viên."
+    elif isinstance(error, RateLimited) or any(
+        marker in message for marker in ("quota", "credit limit", "usage limit", "rate limit")
+    ):
+        code, detail = "quota_exceeded", "Cloudinary đã giới hạn yêu cầu hoặc hết hạn mức lưu trữ/xử lý."
+    elif isinstance(error, NotAllowed):
+        code, detail = "upload_not_allowed", "Dịch vụ lưu media không cho phép tải file. Vui lòng liên hệ quản trị viên."
+    elif isinstance(error, BadRequest) and any(
+        marker in message for marker in ("invalid image", "image file", "unsupported", "file size", "too large")
+    ):
+        code, detail = "invalid_media", "Cloudinary không chấp nhận file này. Thử ảnh JPEG, PNG hoặc WebP khác dưới 5 MB."
+    elif isinstance(error, BadRequest):
+        code, detail = "invalid_upload_request", "Dịch vụ lưu media từ chối yêu cầu tải file. Vui lòng liên hệ quản trị viên."
+    elif any(marker in message for marker in ("timeout", "timed out", "socket error", "ssl", "connection", "certificate")):
+        code, detail = "connection_failed", "Backend không kết nối được Cloudinary hoặc upload quá thời gian. Vui lòng thử lại."
+    else:
+        code, detail = "upload_failed", "Không tải được media lên Cloudinary. Kiểm tra cấu hình và hạn mức."
+    return MediaStorageError(detail, code=code)
 
 
 @dataclass(frozen=True)
@@ -120,13 +154,16 @@ async def _upload(source: bytes | Path, public_id: str, resource_type: str) -> C
 
     try:
         result = await asyncio.to_thread(upload)
-    except Exception:
+    except Exception as error:
         # Provider exceptions may include signed request parameters or secrets.
-        raise MediaStorageError("Không tải được media lên Cloudinary. Kiểm tra cấu hình và hạn mức.") from None
-    url = result.get("secure_url")
-    if (result.get("public_id") != public_id or result.get("resource_type") != resource_type
+        failure = _upload_error(error)
+        logger.warning("Cloudinary upload failed code=%s resource_type=%s", failure.code, resource_type)
+        raise failure from None
+    url = result.get("secure_url") if isinstance(result, dict) else None
+    if (not isinstance(result, dict) or result.get("public_id") != public_id or result.get("resource_type") != resource_type
             or not _valid_delivery_url(url, resource_type, public_id)):
-        raise MediaStorageError("Cloudinary trả về thông tin media không hợp lệ")
+        logger.warning("Cloudinary upload failed code=invalid_response resource_type=%s", resource_type)
+        raise MediaStorageError("Cloudinary trả về thông tin media không hợp lệ", code="invalid_response")
     await get_db()["media_assets"].update_one(
         {"_id": asset_id(resource_type, public_id)},
         {"$set": {"provider": "cloudinary", "cloud_name": settings.CLOUDINARY_CLOUD_NAME,

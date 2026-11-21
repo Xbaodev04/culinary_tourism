@@ -252,8 +252,8 @@ async def _store_image(content: bytes, folder: str) -> str:
     if settings.MEDIA_STORAGE == "cloudinary":
         try:
             asset = await media_storage.upload_image(content, folder, sha256(content).hexdigest())
-        except media_storage.MediaStorageError:
-            raise HTTPException(502, "Không tải được ảnh lên Cloudinary. Vui lòng thử lại.") from None
+        except media_storage.MediaStorageError as error:
+            raise HTTPException(502, {"code": f"cloudinary_{error.code}", "message": str(error)}) from None
         return asset.url
     return await asyncio.to_thread(_store_local_image, content, folder, extension)
 

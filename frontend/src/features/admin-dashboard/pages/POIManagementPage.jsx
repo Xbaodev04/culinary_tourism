@@ -7,6 +7,7 @@ import axiosClient from "../../../api/axiosClient.js";
 import { useAuthStore } from "../../../store/authStore.js";
 import { hasPermission } from "../hooks/useAdminSession.js";
 import { apiErrorMessage } from "../utils/assetUrl.js";
+import { visitorPoiUrl } from "../utils/visitorUrl.js";
 import AudioPreviewPanel from "../components/AudioPreviewPanel.jsx";
 
 const DEFAULT_COORDS = [106.7028, 10.7582];
@@ -652,13 +653,20 @@ export default function POIManagementPage() {
                   </td>
                   <td className="p-3 align-top">
                     <div className="flex flex-col items-center gap-2">
-                      <div className="rounded-lg border border-slate-200 bg-white p-2">
-                        <QRCode value={String(poi.id)} size={96} level="H" />
-                      </div>
-
-                      <span className="text-xs font-medium text-slate-500">
-                        Quét mã QR
-                      </span>
+                      {visitorPoiUrl(poi.id) ? (
+                        <>
+                          <a href={visitorPoiUrl(poi.id)} target="_blank" rel="noreferrer"
+                            className="rounded-lg border border-slate-200 bg-white p-2"
+                            aria-label={`Mở trang ${poi.name}`}>
+                            <QRCode value={visitorPoiUrl(poi.id)} size={96} level="H" />
+                          </a>
+                          <span className="text-xs font-medium text-slate-500">Quét để xem quán</span>
+                        </>
+                      ) : (
+                        <span className="max-w-36 text-center text-xs text-slate-500">
+                          Chưa cấu hình liên kết trang du khách
+                        </span>
+                      )}
                     </div>
                   </td>
                   <td className="p-3 align-top">

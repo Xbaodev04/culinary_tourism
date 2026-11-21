@@ -94,6 +94,11 @@ vụ nền cùng process. Sau khi deploy, mở URL thực tế Render cấp, ki�
 
 ## 3. Frontend trên Vercel
 
+Website du khách Flutter Web được deploy thành project Vercel riêng từ repo
+`seminar_mobile` (xem `docs/flutter-web-qr.md` trong repo đó). Trên project React
+quản trị, đặt `VITE_VISITOR_BASE_URL=https://<visitor-domain>` rồi redeploy để QR
+trong bảng quán chứa link `/poi/<id>`. Dùng production domain ổn định trước khi in.
+
 1. Trong `frontend/vercel.json`, thay **cả hai** URL `https://quan4-api.onrender.com`
    bằng URL backend thực tế từ bước 2; giữ nguyên các phần `/api/:path*` và
    `/static/:path*`.
@@ -151,6 +156,25 @@ file `/static` trước đây; đây không phải kho lưu tài liệu riêng t
 Không tự xóa asset khi bỏ ảnh/đổi thuyết minh vì cùng hash có thể được nhiều quán
 hoặc hồ sơ dùng chung. Khi dọn Cloudinary thủ công, cần kiểm tra mọi tham chiếu và
 xóa metadata tương ứng; cache Mongo không tự phát hiện file bị xóa ngoài ứng dụng.
+
+### Chẩn đoán upload 502 trên Render
+
+Backend trả `detail.code` và `detail.message` an toàn; Render Logs có dòng
+`Cloudinary upload failed code=... resource_type=image`. Không ghi nguyên lỗi
+provider vì lỗi chữ ký có thể kèm tham số hoặc thông tin xác thực.
+
+| Mã `cloudinary_...` | Kiểm tra |
+| --- | --- |
+| `authentication_failed` | Ba biến Cloud name/API Key/API Secret trên Render phải cùng product environment và key còn hiệu lực |
+| `account_disabled` | Trạng thái tài khoản/product environment Cloudinary |
+| `upload_not_allowed` | Quyền upload của key và giới hạn upload |
+| `quota_exceeded` | Usage/credits và giới hạn tần suất |
+| `invalid_media` | Thử ảnh JPEG/PNG/WebP hợp lệ khác dưới 5 MB |
+| `connection_failed` | Kết nối TLS/mạng từ Render tới Cloudinary hoặc timeout |
+| `invalid_upload_request` / `invalid_response` | Cấu hình và hợp đồng upload cần kiểm tra thêm |
+
+Đây là signed upload bằng SDK backend, không cần unsigned upload preset. Không
+đưa API Secret lên Vercel frontend để khắc phục lỗi backend.
 
 ## 5. Kiểm tra sau deploy
 

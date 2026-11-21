@@ -8,6 +8,7 @@ from pathlib import Path
 from threading import get_ident
 
 import cloudinary.uploader
+from cloudinary.exceptions import AuthorizationRequired, BadRequest, NotAllowed, RateLimited
 import pytest
 from fastapi import HTTPException
 
@@ -72,6 +73,32 @@ async def test_image_validation_and_provider_failure_do_not_fall_back_to_disk(cl
         await owner_service.store_menu_image(b"\x89PNG\r\n\x1a\nvalid")
     assert error.value.status_code == 502
     assert "test-secret" not in str(error.value)
+    assert await database.get_db()["media_assets"].count_documents({}) == 0
+
+
+@pytest.mark.parametrize("provider_error,code", [
+    (AuthorizationRequired("Invalid Signature. secret=test-secret api_key=test-key"), "authentication_failed"),
+    (NotAllowed("Restricted key test-secret"), "upload_not_allowed"),
+    (RateLimited("Rate limit with test-secret"), "quota_exceeded"),
+    (BadRequest("Invalid image file: private-filename.png"), "invalid_media"),
+    (BadRequest("Invalid upload parameter: test-secret"), "invalid_upload_request"),
+    (RuntimeError("SSL socket error test-secret"), "connection_failed"),
+    (RuntimeError("Cloud name is disabled test-secret"), "account_disabled"),
+])
+async def test_upload_errors_are_actionable_and_do_not_log_secrets(
+    client, cloud, monkeypatch, caplog, provider_error, code,
+):
+    def fail(*args, **kwargs):
+        raise provider_error
+
+    monkeypatch.setattr(cloudinary.uploader, "upload", fail)
+    with pytest.raises(HTTPException) as error:
+        await owner_service.store_menu_image(b"\x89PNG\r\n\x1a\nvalid")
+    assert error.value.status_code == 502
+    assert error.value.detail["code"] == f"cloudinary_{code}"
+    assert f"code={code}" in caplog.text
+    for sensitive in ("test-secret", "test-key", "private-filename.png"):
+        assert sensitive not in str(error.value.detail) + caplog.text
     assert await database.get_db()["media_assets"].count_documents({}) == 0
 
 
@@ -194,8 +221,11 @@ async def test_failed_upload_never_completes_language_or_leaves_temporary_files(
     assert list(tmp_path.iterdir()) == []
 
 
-async def test_invalid_provider_url_is_not_registered(client, cloud, monkeypatch):
+@pytest.mark.parametrize("malformed", [False, True])
+async def test_invalid_provider_url_is_not_registered(client, cloud, monkeypatch, malformed):
     def invalid(*args, **kwargs):
+        if malformed:
+            return None
         return {"public_id": kwargs["public_id"], "resource_type": "image",
                 "secure_url": "https://example.com/not-our-asset.png"}
 
