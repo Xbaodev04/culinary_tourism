@@ -5,6 +5,7 @@ Phụ trách: Vũ (Core Infra)
 from pathlib import Path
 from typing import Literal
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite"
@@ -57,6 +58,15 @@ class Settings(BaseSettings):
     CLOUDINARY_API_KEY: str = ""
     CLOUDINARY_API_SECRET: str = ""
     CLOUDINARY_FOLDER: str = "quan4"
+
+    @field_validator(
+        "CLOUDINARY_CLOUD_NAME", "CLOUDINARY_API_KEY", "CLOUDINARY_API_SECRET",
+        "CLOUDINARY_FOLDER", mode="before",
+    )
+    @classmethod
+    def trim_cloudinary_environment(cls, value):
+        # Dashboard textarea values can include invisible surrounding newlines.
+        return value.strip() if isinstance(value, str) else value
 
     # Audio & TTS Constants
     VOICE_CATALOG_TTL_HOURS: int = 6

@@ -13,7 +13,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.core import database, media_storage
-from app.core.config import settings
+from app.core.config import Settings, settings
 from app.modules.audio import service as audio_module
 from app.modules.audio.service import TTSService, cache_key
 from app.modules.audio.task_manager import AudioTaskManager
@@ -265,3 +265,18 @@ def test_cloudinary_configuration_fails_early(cloud, monkeypatch):
     monkeypatch.setattr(settings, "CLOUDINARY_API_SECRET", "")
     with pytest.raises(RuntimeError, match="CLOUDINARY_API_SECRET"):
         media_storage.validate_media_config()
+
+
+def test_cloudinary_environment_strips_dashboard_whitespace(monkeypatch):
+    for name, value in {
+        "CLOUDINARY_CLOUD_NAME": " \ntest-cloud\r\n",
+        "CLOUDINARY_API_KEY": " test-key\n",
+        "CLOUDINARY_API_SECRET": "\ttest-secret \r\n",
+        "CLOUDINARY_FOLDER": " quan4\n",
+    }.items():
+        monkeypatch.setenv(name, value)
+    configured = Settings(_env_file=None)
+    assert configured.CLOUDINARY_CLOUD_NAME == "test-cloud"
+    assert configured.CLOUDINARY_API_KEY == "test-key"
+    assert configured.CLOUDINARY_API_SECRET == "test-secret"
+    assert configured.CLOUDINARY_FOLDER == "quan4"
