@@ -1,8 +1,10 @@
+import axiosClient from '../../../api/axiosClient.js';
+
 /**
  * Chuyển đường dẫn tĩnh của backend (vd `/static/images/poi/a.webp`) thành URL tuyệt đối.
  * Chỉ cho phép http(s) và data:image — mọi scheme khác (javascript:, file:...) bị coi là đường dẫn tương đối.
  */
-const apiBase = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api/v1';
+const apiBase = axiosClient.defaults.baseURL;
 const API_ORIGIN = new URL(apiBase, window.location.origin).origin;
 
 export function assetUrl(path) {

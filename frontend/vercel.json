@@ -13,6 +13,9 @@
       "source": "/static/:path*",
       "destination": "https://quan4-api.onrender.com/static/:path*"
     },
-    { "source": "/((?!api(?:/|$)|static(?:/|$)).*)", "destination": "/index.html" }
+    {
+      "source": "/((?!api(?:/|$)|static(?:/|$)).*)",
+      "destination": "/index.html"
+    }
   ]
 }
