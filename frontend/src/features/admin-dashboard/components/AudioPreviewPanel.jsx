@@ -49,7 +49,10 @@ export default function AudioPreviewPanel({
     setResult(null);
     players.current = [];
     refresh();
-    return () => activeRequest.current?.abort();
+    return () => {
+      activeRequest.current?.abort();
+      Object.values(players.current).forEach((player) => player?.pause());
+    };
   }, [refresh]);
 
   const visibleItems =
@@ -139,6 +142,7 @@ export default function AudioPreviewPanel({
                   Tải MP3
                 </a>
               </div>
+              {/* Normal media loading supports the protected route's redirect to the public CDN. */}
               <audio
                 ref={(el) => {
                   if (el) players.current[item.lang] = el;
@@ -146,7 +150,6 @@ export default function AudioPreviewPanel({
                 className="w-full"
                 controls
                 preload="metadata"
-                crossOrigin="use-credentials"
                 src={`${API_BASE}/admin/pois/${encodeURIComponent(poiId)}/audios/${encodeURIComponent(item.lang)}/play`}
                 aria-label={`Nghe audio ${item.name}`}
                 onPlay={() => {
@@ -158,9 +161,11 @@ export default function AudioPreviewPanel({
                 onError={(event) => {
                   const mediaError = event.currentTarget.error;
                   const hint =
-                    mediaError?.code === 4
-                      ? "Trình duyệt không giải mã được MP3. Hãy tải file về và kiểm tra nội dung."
-                      : "Không tải/phát được MP3. Kiểm tra backend :8000, quyền đăng nhập và file trên ổ đĩa.";
+                    mediaError?.code === 3
+                      ? "Không giải mã được âm thanh. Hãy thử tải MP3 để kiểm tra file."
+                      : mediaError?.code === 4
+                        ? "Không mở được nguồn âm thanh. Hãy thử tải MP3 hoặc đăng nhập lại rồi thử lại."
+                        : "Không tải được âm thanh. Kiểm tra kết nối và thử lại.";
                   setPlaybackError((prev) => ({ ...prev, [item.lang]: hint }));
                 }}
                 onCanPlay={() =>
@@ -170,7 +175,7 @@ export default function AudioPreviewPanel({
                   setPlaybackError((prev) => ({
                     ...prev,
                     [item.lang]:
-                      "Kết nối âm thanh bị đứng. Hãy kiểm tra server, thử Làm mới audio hoặc Tải MP3 để kiểm tra file.",
+                      "Âm thanh đang tải chậm. Vui lòng chờ hoặc thử tải MP3.",
                   }))
                 }
               >
