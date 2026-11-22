@@ -1,4 +1,6 @@
-const configuredBase = import.meta.env.VITE_VISITOR_BASE_URL || '';
+const configuredBase =
+  (import.meta.env.VITE_VISITOR_BASE_URL || '').trim() ||
+  'https://seminarmobile.vercel.app';
 
 export function visitorPoiUrl(poiId) {
   if (!configuredBase || !poiId) return null;
