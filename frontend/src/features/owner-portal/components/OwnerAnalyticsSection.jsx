@@ -257,6 +257,20 @@ export default function OwnerAnalyticsSection({ shops, demo }) {
               "Theo giờ Việt Nam (UTC+7) · Chỉ tính hoạt động của khách đã đồng ý chia sẻ thống kê."
             )}
           </p>
+          {stats.traffic && (
+            <dl className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+              {[
+                ["Thiết bị xem quán", stats.traffic.totals.devices],
+                ["Phiên ghé quán", stats.traffic.totals.sessions],
+                ["Lượt mở từ QR", stats.traffic.totals.qr_views],
+              ].map(([label, value]) => (
+                <div key={label} className="rounded-lg border border-amber-100 bg-white p-4">
+                  <dt className="text-sm text-slate-600">{label}</dt>
+                  <dd className="mt-1 text-xl font-bold tabular-nums text-slate-900">{count(value)}</dd>
+                </div>
+              ))}
+            </dl>
+          )}
           <dl className="grid grid-cols-2 gap-3 lg:grid-cols-3 2xl:grid-cols-5">
             {Object.entries(metrics).map(([key, metric]) => (
               <div key={key} className="rounded-lg border border-amber-100 bg-white p-3 sm:p-4">

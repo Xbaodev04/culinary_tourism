@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { Link } from "react-router-dom";
 import {
-  Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis,
+  Bar, BarChart, CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis, Legend,
 } from "recharts";
 import { hasPermission } from "../hooks/useAdminSession.js";
 import AdminInteractionDetails from "./AdminInteractionDetails.jsx";
@@ -123,13 +123,39 @@ export default function AdminOperationsPanel({ data, days, onDaysChange, user })
       </Section>
 
       <section className="ops-traffic-heading">
-        <div><h2>Hiệu quả nội dung & trải nghiệm du khách</h2><p>Chỉ tính những sự kiện người dùng đã đồng ý ghi nhận; không phải số khách duy nhất.</p></div>
+        <div><h2>Truy cập & trải nghiệm du khách</h2><p>Chỉ tính hoạt động của khách đã đồng ý chia sẻ thống kê.</p></div>
         <label className="ops-period">Khoảng ngày
           <select value={days} onChange={(e) => onDaysChange(Number(e.target.value))}>
             <option value={7}>7 ngày</option><option value={30}>30 ngày</option><option value={90}>90 ngày</option>
           </select>
         </label>
       </section>
+      {data.traffic && (
+        <>
+          <div className="ops-traffic-kpis">
+            <div><span>Thiết bị truy cập</span><strong>{number(data.traffic.totals.devices)}</strong></div>
+            <div><span>Phiên truy cập</span><strong>{number(data.traffic.totals.sessions)}</strong></div>
+            <div><span>Lượt mở từ QR</span><strong>{number(data.traffic.totals.qr_views)}</strong></div>
+            <div><span>Lượt nghe audio</span><strong>{number(totals.audio_starts)}</strong></div>
+          </div>
+          <Section title="Thiết bị và phiên truy cập theo ngày" description="Phiên mới sau 30 phút không hoạt động. Tổng thiết bị trong kỳ được loại trùng giữa các ngày, không cộng các tổng theo ngày.">
+            <div className="ops-chart" role="img" aria-label={`Thiết bị và phiên truy cập trong ${days} ngày`}>
+              <ResponsiveContainer width="100%" height="100%" minWidth={0}>
+                <LineChart data={data.traffic.daily} margin={{ top: 8, right: 12, left: -12, bottom: 0 }}>
+                  <CartesianGrid vertical={false} stroke="#e8edf3" />
+                  <XAxis dataKey="date" tickFormatter={(date) => `${date.slice(8, 10)}/${date.slice(5, 7)}`} minTickGap={24} tick={{ fontSize: 10 }} />
+                  <YAxis allowDecimals={false} />
+                  <Tooltip formatter={(value) => number(value)} />
+                  <Legend />
+                  <Line dataKey="devices" name="Thiết bị" stroke="#245cb6" dot={false} isAnimationActive={false} />
+                  <Line dataKey="sessions" name="Phiên truy cập" stroke="#12a085" dot={false} isAnimationActive={false} />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+            <p className="ops-hint">Thiết bị là mã trình duyệt ẩn danh, không phải số người chính xác. Đổi trình duyệt hoặc xóa dữ liệu có thể tạo thiết bị mới. Lượt mở từ QR đếm lượt mở liên kết có nguồn QR, không xác minh camera đã quét mã.</p>
+          </Section>
+        </>
+      )}
       <div className="ops-traffic-kpis">
         <div><span>Xem chi tiết quán</span><strong>{number(totals.views)}</strong></div>
         <div><span>Chọn từ tìm kiếm</span><strong>{number(totals.search_selections)}</strong></div>

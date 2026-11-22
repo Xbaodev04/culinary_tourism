@@ -7,7 +7,9 @@ export function visitorPoiUrl(poiId) {
   try {
     const base = new URL(configuredBase);
     if (!['http:', 'https:'].includes(base.protocol) || base.username || base.password) return null;
-    return new URL(`/poi/${encodeURIComponent(String(poiId))}`, base.origin).toString();
+    const url = new URL(`/poi/${encodeURIComponent(String(poiId))}`, base.origin);
+    url.searchParams.set('source', 'qr');
+    return url.toString();
   } catch {
     return null;
   }

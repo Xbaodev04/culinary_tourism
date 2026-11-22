@@ -155,6 +155,9 @@ async def ensure_indexes(database: Any) -> None:
         [("day", 1), ("kind", 1), ("poi_id", 1)], name="admin_day_kind_poi"
     )
     await database["analytics_poi_events"].create_index("expires_at", expireAfterSeconds=0, name="expires_ttl")
+    await database["analytics_poi_events"].create_index(
+        [("day", 1), ("device_id", 1), ("session_id", 1)], name="traffic_day_identity"
+    )
 
     # --- audio_tasks / audit_logs ---
     await database["mobile_presence"].create_index("expires_at", expireAfterSeconds=0, name="presence_expiry")

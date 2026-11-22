@@ -10,17 +10,27 @@ class AnalyticsEvent(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     event_id: UUID
-    poi_id: str = Field(pattern=r"^[0-9a-fA-F]{24}$")
+    poi_id: str | None = Field(default=None, pattern=r"^[0-9a-fA-F]{24}$")
     kind: Literal[
-        "poi_viewed", "search_poi_selected", "audio_started", "audio_completed", "audio_ended"
+        "app_visited", "poi_viewed", "search_poi_selected", "audio_started", "audio_completed", "audio_ended"
     ]
     occurred_at: AwareDatetime
     playback_id: UUID | None = None
+    device_id: UUID | None = None
+    session_id: UUID | None = None
+    source: Literal["direct", "qr"] = "direct"
     language: Literal["vi", "en", "zh", "ja", "ko"] | None = None
     duration_seconds: float | None = Field(default=None, ge=0, le=86400, allow_inf_nan=False)
 
     @model_validator(mode="after")
     def validate_playback_fields(self) -> Self:
+        if (self.device_id is None) != (self.session_id is None):
+            raise ValueError("device_id and session_id must be provided together")
+        if self.kind == "app_visited":
+            if self.poi_id is not None or self.device_id is None:
+                raise ValueError("App visits require anonymous identities and no poi_id")
+        elif self.poi_id is None:
+            raise ValueError("POI events require poi_id")
         if self.kind.startswith("audio_"):
             if self.playback_id is None or self.language is None:
                 raise ValueError("Audio events require playback_id and language")

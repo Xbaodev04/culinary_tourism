@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from bson import ObjectId
 
 from app.core.database import get_db
-from app.modules.analytics.service import COUNT_METRICS, LOCAL_TZ, METRICS, RETENTION_DAYS
+from app.modules.analytics.service import COUNT_METRICS, LOCAL_TZ, METRICS, RETENTION_DAYS, analytics_service
 
 REVIEW_STATUSES = ("pending", "approved", "rejected")
 AUDIO_STATUSES = ("queued", "running", "paused", "completed", "failed", "cancelled")
@@ -109,6 +109,7 @@ async def get_admin_dashboard_stats(days: int = 30) -> dict:
     return {
         "days": days,
         "generated_at": datetime.now(LOCAL_TZ).isoformat(),
+        "traffic": await analytics_service.get_traffic_stats(days),
         "summary": {
             "pois": {"total": poi_total, "active": poi_active, "inactive": poi_total - poi_active},
             "users": {"total": users_total, "owners": owners_total},
@@ -116,7 +117,7 @@ async def get_admin_dashboard_stats(days: int = 30) -> dict:
             "submissions": submissions,
             "audio": {
                 **audio,
-                "processing": sum(audio[status] for status in ("queued", "running", "paused")) * 2,
+                "processing": sum(audio[status] for status in ("queued", "running", "paused")),
             },
         },
         "interactions": {
